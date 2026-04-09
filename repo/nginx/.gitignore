@@ -1,0 +1,11 @@
+# ── Nginx runtime files ───────────────────────────────────────────────────────
+logs/
+*.pid
+*.lock
+
+# ── Generated / cached certs (use secrets management in prod) ─────────────────
+ssl/
+certs/
+*.pem
+*.crt
+*.key

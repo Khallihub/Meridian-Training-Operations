@@ -1,0 +1,13 @@
+# ── Prometheus runtime data ───────────────────────────────────────────────────
+data/
+prometheus-data/
+
+# ── Grafana runtime data ──────────────────────────────────────────────────────
+grafana/data/
+grafana/plugins/
+grafana/logs/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example

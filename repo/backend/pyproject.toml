@@ -1,0 +1,53 @@
+[tool.poetry]
+name = "meridian-backend"
+version = "0.1.0"
+description = "Meridian Training Operations System — Backend"
+authors = ["EaglePointAI"]
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.115.4"
+uvicorn = {extras = ["standard"], version = "^0.32.0"}
+sqlalchemy = {extras = ["asyncio"], version = "^2.0.30"}
+asyncpg = "^0.29.0"
+alembic = "^1.13.1"
+pydantic = {extras = ["email"], version = "^2.7.1"}
+pydantic-settings = "^2.2.1"
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+cryptography = "^42.0.5"
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+python-multipart = "^0.0.9"
+celery = {extras = ["redis"], version = "^5.3.6"}
+redis = "^5.0.4"
+confluent-kafka = "^2.4.0"
+minio = "^7.2.7"
+openpyxl = "^3.1.2"
+prometheus-client = "^0.20.0"
+starlette-prometheus = "^0.10.0"
+python-dateutil = "^2.9.0"
+python-crontab = "^3.0.0"
+psycopg2-binary = "^2.9.9"
+mysql-connector-python = "^8.3.0"
+python-slugify = "^8.0.4"
+httpx = "^0.27.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.0"
+pytest-asyncio = "^0.23.6"
+pytest-cov = "^5.0.0"
+httpx = "^0.27.0"
+faker = "^25.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/main.py", "tests/*", "alembic/*"]

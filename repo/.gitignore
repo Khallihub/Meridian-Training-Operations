@@ -1,0 +1,28 @@
+# ── OS / editor ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+
+# ── Docker volumes (if mounted locally) ──────────────────────────────────────
+docker-volumes/
+postgres-data/
+redis-data/
+minio-data/
+
+# ── Exports / uploads (runtime artefacts) ────────────────────────────────────
+exports/
+uploads/

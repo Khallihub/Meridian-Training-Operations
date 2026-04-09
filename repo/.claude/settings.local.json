@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find C:\\\\Users\\\\bita\\\\Work\\\\EaglePointAI\\\\Full-stack\\\\Meridian Training Operations system\\\\repo\\\\backend:*)",
+      "Bash(docker compose:*)",
+      "Bash(pip install:*)",
+      "Bash(poetry lock:*)",
+      "Bash(pip show:*)",
+      "Bash(MSYS_NO_PATHCONV=1 docker run:*)",
+      "Bash(npm --version)",
+      "Bash(npm install:*)",
+      "Bash(npx vue-tsc:*)",
+      "Bash(netstat -ano)",
+      "Bash(powershell.exe -c \"netstat -ano | Select-String ':6379|:5432'\")",
+      "Bash(powershell.exe:*)",
+      "Bash(curl -s http://localhost:8000/api/monitoring/health)",
+      "Bash(curl -s http://localhost:80)"
+    ]
+  }
+}
