@@ -81,3 +81,15 @@ class SavedSearchResponse(BaseModel):
 class ExportRequest(BaseModel):
     filters: SearchFilters
     format: Literal["csv", "excel"] = "csv"
+
+
+class SearchExportJobResponse(BaseModel):
+    id: uuid.UUID
+    status: str
+    format: str
+    row_count: int | None = None
+    error_detail: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+    model_config = {"from_attributes": True}

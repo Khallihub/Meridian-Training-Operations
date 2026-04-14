@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from app.modules.sessions.models import SessionStatus
 
@@ -19,8 +19,14 @@ class SessionCreate(BaseModel):
     room_id: uuid.UUID
     start_time: datetime
     end_time: datetime
-    capacity: int = 20
-    buffer_minutes: int = 10
+    capacity: int = Field(default=20, ge=1)
+    buffer_minutes: int = Field(default=10, ge=0)
+
+    @model_validator(mode="after")
+    def _end_after_start(self) -> "SessionCreate":
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self
 
 
 class RecurringSessionCreate(BaseModel):
@@ -28,8 +34,8 @@ class RecurringSessionCreate(BaseModel):
     course_id: uuid.UUID
     instructor_id: uuid.UUID
     room_id: uuid.UUID
-    capacity: int = 20
-    buffer_minutes: int = 10
+    capacity: int = Field(default=20, ge=1)
+    buffer_minutes: int = Field(default=10, ge=0)
     recurrence: RecurrenceRuleCreate
 
 
@@ -40,8 +46,14 @@ class SessionUpdate(BaseModel):
     room_id: uuid.UUID | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
-    capacity: int | None = None
-    buffer_minutes: int | None = None
+    capacity: int | None = Field(default=None, ge=1)
+    buffer_minutes: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _end_after_start(self) -> "SessionUpdate":
+        if self.start_time and self.end_time and self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self
 
 
 class SessionResponse(BaseModel):

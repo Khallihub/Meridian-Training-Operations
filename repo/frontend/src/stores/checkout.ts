@@ -19,7 +19,7 @@ export interface AppliedPromotion {
 export interface Order {
   id: string
   learner_id: string
-  status: 'pending' | 'paid' | 'cancelled' | 'refunded'
+  status: 'awaiting_payment' | 'paid' | 'closed_unpaid' | 'canceled' | 'refund_pending' | 'refunded_partial' | 'refunded_full'
   subtotal: number
   discount_total: number
   total: number

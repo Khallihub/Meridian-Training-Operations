@@ -35,7 +35,7 @@ const liveCount = computed(() => sessions.weekSessions.filter(s => s.status === 
       <StatCard label="Sessions Today" :value="today.length" />
       <StatCard label="Live Now" :value="liveCount" />
       <StatCard label="This Week" :value="sessions.weekSessions.length" />
-      <StatCard label="Cancelled" :value="sessions.weekSessions.filter(s => s.status === 'cancelled').length" />
+      <StatCard label="Canceled" :value="sessions.weekSessions.filter(s => s.status === 'canceled').length" />
     </div>
 
     <!-- Calendar -->

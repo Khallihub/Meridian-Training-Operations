@@ -46,7 +46,7 @@ onMounted(async () => {
   await sessions.fetchOne(sessionId)
   if (auth.isLearner) {
     const res = await bookingsApi.getAll({ session_id: sessionId, page_size: 5 })
-    myBooking.value = res.items.find((b: any) => b.status !== 'cancelled') ?? null
+    myBooking.value = res.items.find((b: any) => b.status !== 'canceled') ?? null
   }
 })
 

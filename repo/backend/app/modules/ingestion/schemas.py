@@ -9,7 +9,7 @@ from app.modules.ingestion.models import IngestionRunStatus, IngestionSourceType
 class IngestionSourceCreate(BaseModel):
     name: str
     type: IngestionSourceType
-    config: dict          # plaintext; encrypted before storage
+    config: dict = {}     # plaintext; encrypted before storage
     collection_frequency_seconds: int = 300
     concurrency_cap: int = 10
 

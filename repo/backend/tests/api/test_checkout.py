@@ -3,7 +3,7 @@
 import pytest
 from datetime import UTC, datetime, timedelta
 
-from tests.conftest import make_user
+from tests.conftest import make_user, resp_data
 from app.modules.users.models import UserRole
 
 
@@ -28,6 +28,7 @@ async def _seed_session(db):
     await db.flush()
     now = datetime.now(UTC)
     session = Session(
+        title="Advanced Python Session",
         course_id=course.id, instructor_id=instr.id, room_id=room.id,
         start_time=now + timedelta(days=2), end_time=now + timedelta(days=2, hours=1),
         capacity=20, created_by=instr_user.id,
@@ -42,14 +43,13 @@ class TestCheckout:
     async def test_create_cart_auto_best_offer(self, client, db):
         session, course = await _seed_session(db)
         learner = await make_user(db, UserRole.learner, username="learner_co")
-        token = (await client.post("/api/auth/login", json={"username": "learner_co", "password": "TestPass@1234"})).json()["access_token"]
+        token = resp_data(await client.post("/api/v1/auth/login", json={"username": "learner_co", "password": "TestPass@1234"}))["access_token"]
 
         # Add a promotion
         from app.modules.promotions.models import Promotion, PromotionType
-        from datetime import UTC, datetime, timedelta
         promo = Promotion(
             name="10% off",
-            type=PromotionType.pct_off,
+            type=PromotionType.percent_off,
             value=10.0,
             applies_to={"all": True},
             is_active=True,
@@ -60,12 +60,12 @@ class TestCheckout:
         await db.flush()
 
         resp = await client.post(
-            "/api/checkout/cart",
+            "/api/v1/checkout/cart",
             json={"items": [{"session_id": str(session.id), "quantity": 1}]},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 201
-        data = resp.json()
+        data = resp_data(resp)
         assert data["subtotal"] == 150.0
         assert data["discount_total"] == pytest.approx(15.0)
         assert data["total"] == pytest.approx(135.0)
@@ -74,14 +74,14 @@ class TestCheckout:
     async def test_best_offer_dry_run(self, client, db):
         session, _ = await _seed_session(db)
         admin = await make_user(db, UserRole.admin, username="admin_bo")
-        token = (await client.post("/api/auth/login", json={"username": "admin_bo", "password": "TestPass@1234"})).json()["access_token"]
+        token = resp_data(await client.post("/api/v1/auth/login", json={"username": "admin_bo", "password": "TestPass@1234"}))["access_token"]
 
         resp = await client.post(
-            "/api/checkout/best-offer",
+            "/api/v1/checkout/best-offer",
             json={"items": [{"session_id": str(session.id), "quantity": 1}]},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 200
-        data = resp.json()
+        data = resp_data(resp)
         assert "subtotal" in data
         assert "applied_promotions" in data

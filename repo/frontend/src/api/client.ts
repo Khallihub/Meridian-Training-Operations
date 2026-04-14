@@ -46,13 +46,26 @@ client.interceptors.response.use(
     // Slide the client-side inactivity window on every successful authenticated response
     const auth = getAuthStoreSync()
     if (auth?.accessToken) auth.recordActivity()
+
+    // Unwrap the standard PRD response envelope: { data, meta, error }
+    // Only unwrap responses from /api/v1/* that have the envelope shape
+    if (
+      res.data &&
+      typeof res.data === 'object' &&
+      'data' in res.data &&
+      'meta' in res.data &&
+      'error' in res.data
+    ) {
+      res.data = res.data.data
+    }
+
     return res
   },
   async error => {
     const original: AxiosRequestConfig & { _retry?: boolean } = error.config
     const status = error.response?.status
 
-    if (status === 401 && !original._retry && !original.url?.includes('/api/auth/refresh') && !original.url?.includes('/api/auth/login')) {
+    if (status === 401 && !original._retry && !original.url?.includes('/api/v1/auth/refresh') && !original.url?.includes('/api/v1/auth/login')) {
       if (refreshing) {
         return new Promise((resolve, reject) => {
           waitQueue.push({

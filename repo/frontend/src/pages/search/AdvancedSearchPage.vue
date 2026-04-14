@@ -126,10 +126,11 @@ function fmtDate(v: unknown) {
               <label class="block text-xs text-muted-foreground mb-1">Status</label>
               <select v-model="filters.enrollment_status" class="w-full px-2 py-1.5 rounded border border-border bg-background text-sm">
                 <option value="">All</option>
-                <option>pending</option>
+                <option>requested</option>
                 <option>confirmed</option>
-                <option>rescheduled</option>
-                <option>cancelled</option>
+                <option>rescheduled_out</option>
+                <option>canceled</option>
+                <option>completed</option>
                 <option>no_show</option>
               </select>
             </div>

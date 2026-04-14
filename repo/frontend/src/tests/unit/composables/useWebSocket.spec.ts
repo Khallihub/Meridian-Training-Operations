@@ -15,7 +15,7 @@ const MockWebSocket = vi.fn().mockImplementation(() => {
 
 describe('useWebSocket', () => {
   beforeEach(() => {
-    setActivePinia(createPinia())
+    setActivePinia(createPinia());
     (globalThis as any).WebSocket = MockWebSocket as any
     MockWebSocket.mockClear()
   })

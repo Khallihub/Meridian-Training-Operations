@@ -42,12 +42,19 @@ def _calc_discount(
         if not allowed_course_ids.intersection(course_ids):
             return 0.0
 
-    if promo.type == PromotionType.pct_off:
+    if promo.type == PromotionType.percent_off:
         return round(subtotal * float(promo.value) / 100, 2)
     elif promo.type == PromotionType.fixed_off:
         return round(min(float(promo.value), subtotal), 2)
-    elif promo.type == PromotionType.bogo:
-        # Buy-one-get-one: for every 2 items, the cheapest one is free.
+    elif promo.type == PromotionType.threshold_fixed_off:
+        # Apply a fixed discount only when order meets the minimum amount threshold.
+        # min_order_amount acts as the threshold; value is the fixed discount amount.
+        threshold = float(promo.min_order_amount or 0)
+        if subtotal < threshold:
+            return 0.0
+        return round(min(float(promo.value), subtotal), 2)
+    elif promo.type == PromotionType.bogo_selected_workshops:
+        # Buy-one-get-one for every 2 eligible units: cheapest unit in each pair is free.
         # Requires item_prices for accurate calculation; falls back to 50% if unavailable.
         if item_prices and len(item_prices) >= 2:
             sorted_prices = sorted(item_prices)  # cheapest first
@@ -60,13 +67,20 @@ def _calc_discount(
 
 
 def _build_explanation(promo: Promotion, discount: float) -> str:
-    if promo.type == PromotionType.pct_off:
+    if promo.type == PromotionType.percent_off:
         return f"{promo.name}: {promo.value}% off → -${discount:.2f}"
     elif promo.type == PromotionType.fixed_off:
         return f"{promo.name}: ${promo.value:.2f} off → -${discount:.2f}"
-    elif promo.type == PromotionType.bogo:
-        return f"{promo.name}: BOGO 50% off → -${discount:.2f}"
+    elif promo.type == PromotionType.threshold_fixed_off:
+        return f"{promo.name}: ${promo.value:.2f} off (threshold met) → -${discount:.2f}"
+    elif promo.type == PromotionType.bogo_selected_workshops:
+        return f"{promo.name}: BOGO — cheapest workshop free → -${discount:.2f}"
     return f"{promo.name}: -${discount:.2f}"
+
+
+def _promo_sort_key(promo: Promotion, discount: float) -> tuple:
+    """Deterministic comparison key: best discount first, then lowest priority, then lowest ID."""
+    return (-discount, promo.priority, str(promo.id))
 
 
 def _group_promotions(promotions: list[Promotion]) -> dict[str | None, list[Promotion]]:
@@ -115,12 +129,16 @@ def compute_best_offer(
     best_total: float = 0.0
 
     # --- Step 2: test each exclusive promo alone ---
+    # Tie-break: discount DESC → priority ASC → promotion_id ASC
+    best_key: tuple = (0.0, 0, "")  # (discount, priority, id) — inverted for comparison
     for p in exclusive:
         candidate = _apply_single(p)
         total = sum(a.discount_amount for a in candidate)
-        if total > best_total:
+        key = _promo_sort_key(p, total)
+        if total > best_total or (total == best_total and total > 0 and key < best_key):
             best_total = total
             best = candidate
+            best_key = key
 
     # --- Step 3: group non-exclusive promos ---
     groups = _group_promotions(non_exclusive)
@@ -129,25 +147,31 @@ def compute_best_offer(
     null_group = groups.pop(None, [])
     named_groups = groups  # dict[str, list[Promotion]]
 
-    # From the null group, pick the single best promo (mutual exclusion default)
+    # From the null group, pick the single best promo using deterministic tie-break
     best_null: Promotion | None = None
     best_null_discount: float = 0.0
+    best_null_key: tuple = (0.0, 0, "")
     for p in null_group:
         d = _calc_discount(p, subtotal, course_ids, item_prices)
-        if d > best_null_discount:
+        key = _promo_sort_key(p, d)
+        if d > best_null_discount or (d == best_null_discount and d > 0 and key < best_null_key):
             best_null_discount = d
             best_null = p
+            best_null_key = key
 
-    # For each named group, pick the best promo from that group
+    # For each named group, pick the best promo using deterministic tie-break
     best_per_group: dict[str, tuple[Promotion, float]] = {}
     for group_name, promos in named_groups.items():
         best_p: Promotion | None = None
         best_d: float = 0.0
+        best_pg_key: tuple = (0.0, 0, "")
         for p in promos:
             d = _calc_discount(p, subtotal, course_ids, item_prices)
-            if d > best_d:
+            key = _promo_sort_key(p, d)
+            if d > best_d or (d == best_d and d > 0 and key < best_pg_key):
                 best_d = d
                 best_p = p
+                best_pg_key = key
         if best_p and best_d > 0:
             best_per_group[group_name] = (best_p, best_d)
 

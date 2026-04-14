@@ -40,7 +40,7 @@ function changeMonth(delta: number) {
 }
 
 const monthDisplaySessions = computed(() =>
-  sessions.monthlySessions.filter(s => s.status !== 'cancelled')
+  sessions.monthlySessions.filter(s => s.status !== 'canceled')
 )
 
 async function handleBook(session: Session) {
@@ -100,7 +100,7 @@ const bookableStatuses = ['scheduled']
     </div>
 
     <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      <div v-for="s in sessions.weekSessions.filter(x => x.status !== 'cancelled')" :key="s.id"
+      <div v-for="s in sessions.weekSessions.filter(x => x.status !== 'canceled')" :key="s.id"
         class="bg-card border border-border rounded-lg p-4 flex flex-col gap-3 hover:shadow-md transition-shadow">
         <div class="flex items-start justify-between">
           <h3 class="font-medium text-foreground text-sm">{{ s.course_title }}</h3>

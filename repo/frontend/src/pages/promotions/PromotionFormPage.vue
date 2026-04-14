@@ -14,11 +14,13 @@ const editId = route.params.id as string | undefined
 const prefix = auth.isAdmin ? '/admin' : '/finance'
 
 const form = ref({
-  name: '', type: 'pct_off' as 'pct_off' | 'fixed_off' | 'bogo', value: 0,
+  name: '', type: 'percent_off' as 'percent_off' | 'fixed_off' | 'threshold_fixed_off' | 'bogo_selected_workshops', value: 0,
   min_order_amount: '', applies_to: 'all' as const,
   stack_group: '', is_exclusive: false, is_active: true,
   valid_from: '', valid_until: '',
 })
+
+const previewSessionId = ref('')
 
 const previewResult = ref<any>(null)
 const isSubmitting = ref(false)
@@ -52,7 +54,13 @@ async function handleSubmit() {
 }
 
 async function handlePreview() {
-  previewResult.value = await adminApi.previewPromotion({ promotion: form.value, sample_order_total: 100 })
+  if (!previewSessionId.value.trim()) {
+    ui.addToast('Enter a session ID to preview promotions for a sample cart.', 'error')
+    return
+  }
+  previewResult.value = await adminApi.previewPromotion({
+    items: [{ session_id: previewSessionId.value.trim(), quantity: 1 }],
+  })
 }
 </script>
 
@@ -70,9 +78,10 @@ async function handlePreview() {
             <div>
               <label class="block text-sm font-medium mb-1">Type</label>
               <select v-model="form.type" class="w-full px-3 py-2 rounded-md border border-border bg-background text-sm">
-                <option value="pct_off">Percent Off</option>
+                <option value="percent_off">Percent Off</option>
                 <option value="fixed_off">Fixed Off</option>
-                <option value="bogo">BOGO</option>
+                <option value="threshold_fixed_off">Threshold Fixed Off</option>
+                <option value="bogo_selected_workshops">BOGO Selected Workshops</option>
               </select>
             </div>
             <div>
@@ -107,10 +116,18 @@ async function handlePreview() {
             <button type="submit" :disabled="isSubmitting" class="px-4 py-2 bg-primary text-primary-foreground rounded text-sm hover:opacity-90 disabled:opacity-50">
               {{ editId ? 'Save' : 'Create' }}
             </button>
-            <button type="button" @click="handlePreview" class="px-4 py-2 bg-secondary text-secondary-foreground rounded text-sm hover:bg-accent">Preview Best Offer</button>
             <button type="button" @click="router.back()" class="px-4 py-2 bg-secondary text-secondary-foreground rounded text-sm hover:bg-accent">Cancel</button>
           </div>
         </form>
+
+        <!-- Preview session input -->
+        <div class="mt-4 flex gap-2 items-end">
+          <div class="flex-1">
+            <label class="block text-xs text-muted-foreground mb-1">Session ID for preview (UUID)</label>
+            <input v-model="previewSessionId" type="text" placeholder="e.g. 3f2a1b…" class="w-full px-3 py-2 rounded-md border border-border bg-background text-sm font-mono" />
+          </div>
+          <button type="button" @click="handlePreview" class="px-4 py-2 bg-secondary text-secondary-foreground rounded text-sm hover:bg-accent whitespace-nowrap">Preview Best Offer</button>
+        </div>
 
         <!-- Preview result -->
         <div v-if="previewResult" class="mt-4 p-4 bg-muted/30 rounded-lg text-sm">

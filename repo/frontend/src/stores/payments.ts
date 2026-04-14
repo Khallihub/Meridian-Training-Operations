@@ -19,7 +19,7 @@ export interface Refund {
   requested_by: string
   amount: number
   reason: string
-  status: 'pending' | 'approved' | 'completed' | 'rejected'
+  status: 'requested' | 'pending_review' | 'approved' | 'processing' | 'completed' | 'rejected' | 'failed' | 'canceled'
   created_at: string
   processed_at: string | null
 }
@@ -66,8 +66,26 @@ export const usePaymentsStore = defineStore('payments', () => {
     return await paymentsApi.submitRefund(payload)
   }
 
+  async function reviewRefund(id: string) {
+    const updated = await paymentsApi.reviewRefund(id)
+    _replaceRefund(updated)
+    return updated
+  }
+
   async function approveRefund(id: string) {
     const updated = await paymentsApi.approveRefund(id)
+    _replaceRefund(updated)
+    return updated
+  }
+
+  async function rejectRefund(id: string) {
+    const updated = await paymentsApi.rejectRefund(id)
+    _replaceRefund(updated)
+    return updated
+  }
+
+  async function processRefund(id: string) {
+    const updated = await paymentsApi.processRefund(id)
     _replaceRefund(updated)
     return updated
   }
@@ -98,6 +116,7 @@ export const usePaymentsStore = defineStore('payments', () => {
   return {
     currentPayment, refunds, exports, loading,
     fetchPayment, pollPayment, submitRefund,
-    approveRefund, completeRefund, fetchRefunds, triggerExport, fetchExports,
+    reviewRefund, approveRefund, rejectRefund, processRefund, completeRefund,
+    fetchRefunds, triggerExport, fetchExports,
   }
 })

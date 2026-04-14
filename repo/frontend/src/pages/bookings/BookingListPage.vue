@@ -71,7 +71,7 @@ async function handleCancel(id: string) {
     <div class="flex gap-3 mb-4">
       <select v-model="filterStatus" @change="loadBookings" class="px-2 py-1.5 rounded border border-border bg-background text-sm">
         <option value="">All statuses</option>
-        <option>pending</option><option>confirmed</option><option>rescheduled</option><option>cancelled</option><option>no_show</option>
+        <option>requested</option><option>confirmed</option><option>rescheduled_out</option><option>canceled</option><option>completed</option><option>no_show</option>
       </select>
     </div>
 
@@ -97,8 +97,8 @@ async function handleCancel(id: string) {
       </template>
       <template #actions="{ row }">
         <div class="flex justify-end gap-1.5">
-          <button v-if="auth.isAdmin && row.status === 'pending'" @click.stop="handleConfirm(String(row.id))" class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700">Confirm</button>
-          <button v-if="['pending','confirmed'].includes(String(row.status))" @click.stop="handleCancel(String(row.id))" class="px-2 py-1 text-xs bg-destructive/10 text-destructive rounded hover:bg-destructive/20">Cancel</button>
+          <button v-if="auth.isAdmin && row.status === 'requested'" @click.stop="handleConfirm(String(row.id))" class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700">Confirm</button>
+          <button v-if="['requested','confirmed'].includes(String(row.status))" @click.stop="handleCancel(String(row.id))" class="px-2 py-1 text-xs bg-destructive/10 text-destructive rounded hover:bg-destructive/20">Cancel</button>
         </div>
       </template>
     </DataTable>

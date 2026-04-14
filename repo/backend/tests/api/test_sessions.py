@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from tests.conftest import make_user
+from tests.conftest import make_user, resp_data
 from app.modules.users.models import UserRole
 
 
@@ -39,11 +39,12 @@ class TestSessionCRUD:
     async def test_create_session(self, client, db):
         loc, room, course, instructor, instr_user = await _setup_session_data(db)
         admin = await make_user(db, UserRole.admin, username="admin_sess")
-        token_resp = await client.post("/api/auth/login", json={"username": "admin_sess", "password": "TestPass@1234"})
-        token = token_resp.json()["access_token"]
+        token_resp = await client.post("/api/v1/auth/login", json={"username": "admin_sess", "password": "TestPass@1234"})
+        token = resp_data(token_resp)["access_token"]
 
         now = datetime.now(UTC)
         payload = {
+            "title": "Python Basics Session",
             "course_id": str(course.id),
             "instructor_id": str(instructor.id),
             "room_id": str(room.id),
@@ -51,38 +52,39 @@ class TestSessionCRUD:
             "end_time": (now + timedelta(days=1, hours=1)).isoformat(),
             "capacity": 20,
         }
-        resp = await client.post("/api/sessions", json=payload, headers={"Authorization": f"Bearer {token}"})
+        resp = await client.post("/api/v1/sessions", json=payload, headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 201
-        data = resp.json()
+        data = resp_data(resp)
         assert data["status"] == "scheduled"
 
     async def test_get_weekly_calendar(self, client, db):
         admin = await make_user(db, UserRole.admin, username="admin_cal")
-        token_resp = await client.post("/api/auth/login", json={"username": "admin_cal", "password": "TestPass@1234"})
-        token = token_resp.json()["access_token"]
-        resp = await client.get("/api/sessions?week=2026-W14", headers={"Authorization": f"Bearer {token}"})
+        token_resp = await client.post("/api/v1/auth/login", json={"username": "admin_cal", "password": "TestPass@1234"})
+        token = resp_data(token_resp)["access_token"]
+        resp = await client.get("/api/v1/sessions?week=2026-W14", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+        assert isinstance(resp_data(resp), list)
 
-    async def test_go_live_and_complete(self, client, db):
+    async def test_go_live_and_end(self, client, db):
         loc, room, course, instructor, instr_user = await _setup_session_data(db)
         admin = await make_user(db, UserRole.admin, username="admin_live")
-        token_resp = await client.post("/api/auth/login", json={"username": "admin_live", "password": "TestPass@1234"})
-        token = token_resp.json()["access_token"]
+        token_resp = await client.post("/api/v1/auth/login", json={"username": "admin_live", "password": "TestPass@1234"})
+        token = resp_data(token_resp)["access_token"]
 
         now = datetime.now(UTC)
         payload = {
+            "title": "Live Test Session",
             "course_id": str(course.id),
             "instructor_id": str(instructor.id),
             "room_id": str(room.id),
             "start_time": (now + timedelta(minutes=5)).isoformat(),
             "end_time": (now + timedelta(hours=1)).isoformat(),
         }
-        create_resp = await client.post("/api/sessions", json=payload, headers={"Authorization": f"Bearer {token}"})
-        session_id = create_resp.json()["id"]
+        create_resp = await client.post("/api/v1/sessions", json=payload, headers={"Authorization": f"Bearer {token}"})
+        session_id = resp_data(create_resp)["id"]
 
-        live_resp = await client.post(f"/api/sessions/{session_id}/go-live", headers={"Authorization": f"Bearer {token}"})
-        assert live_resp.json()["status"] == "live"
+        live_resp = await client.post(f"/api/v1/sessions/{session_id}/go-live", headers={"Authorization": f"Bearer {token}"})
+        assert resp_data(live_resp)["status"] == "live"
 
-        complete_resp = await client.post(f"/api/sessions/{session_id}/complete", headers={"Authorization": f"Bearer {token}"})
-        assert complete_resp.json()["status"] == "completed"
+        end_resp = await client.post(f"/api/v1/sessions/{session_id}/end", headers={"Authorization": f"Bearer {token}"})
+        assert resp_data(end_resp)["status"] == "ended"

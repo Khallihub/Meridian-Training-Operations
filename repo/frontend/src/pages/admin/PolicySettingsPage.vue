@@ -16,7 +16,7 @@ const saving = ref(false)
 
 onMounted(async () => {
   try {
-    const res = await client.get('/api/admin/policy')
+    const res = await client.get('/api/v1/admin/policy')
     policy.value = res.data
   } catch (e: any) {
     ui.addToast(e.message, 'error')
@@ -26,7 +26,7 @@ onMounted(async () => {
 async function save() {
   saving.value = true
   try {
-    const res = await client.patch('/api/admin/policy', {
+    const res = await client.patch('/api/v1/admin/policy', {
       reschedule_cutoff_hours: policy.value.reschedule_cutoff_hours,
       cancellation_fee_hours: policy.value.cancellation_fee_hours,
     })

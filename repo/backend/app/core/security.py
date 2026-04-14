@@ -8,7 +8,11 @@ from passlib.context import CryptContext
 
 from app.core.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Argon2id is the PRD-required algorithm.  bcrypt is listed as deprecated so
+# existing bcrypt hashes can still be verified and are transparently upgraded
+# to argon2 on the next successful login (passlib re-hashes on verify when the
+# stored scheme is deprecated).
+pwd_context = CryptContext(schemes=["argon2", "bcrypt"], deprecated=["bcrypt"])
 
 _redis_client: aioredis.Redis | None = None
 
@@ -44,6 +48,31 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
+
+
+def verify_and_rehash_password(plain: str, hashed: str) -> tuple[bool, str | None]:
+    """Verify a password and transparently upgrade deprecated hashes.
+
+    Returns ``(is_valid, new_hash)``.
+
+    - ``is_valid`` is True when the plain password matches ``hashed``.
+    - ``new_hash`` is non-None **only** when the stored hash used a deprecated
+      scheme (bcrypt) and the plain password was correct.  The caller must
+      persist ``new_hash`` to the database so the next login uses Argon2id.
+    - ``new_hash`` is always None on a failed verification so callers cannot
+      accidentally write a hash for the wrong password.
+
+    Example (auth service login)::
+
+        is_valid, new_hash = verify_and_rehash_password(password, user.password_hash)
+        if not is_valid:
+            ...  # handle failure
+        if new_hash:
+            await repo.update_password(user.id, new_hash)  # silent upgrade
+    """
+    is_valid, new_hash = pwd_context.verify_and_update(plain, hashed)
+    # Guard: only return a new hash on success
+    return is_valid, (new_hash if is_valid and new_hash else None)
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,19 @@ export function useWebSocket(sessionId: string) {
   let retryTimeout: ReturnType<typeof setTimeout> | null = null
   let destroyed = false
 
+  // Direct synchronous message handlers — called for every incoming message
+  // before any Vue reactivity update. Used by LiveRoomModal for WebRTC signaling
+  // so that messages are never lost to batching or async watcher concurrency.
+  const _rawHandlers: Array<(msg: Record<string, unknown>) => void> = []
+
+  function addMessageHandler(handler: (msg: Record<string, unknown>) => void): () => void {
+    _rawHandlers.push(handler)
+    return () => {
+      const idx = _rawHandlers.indexOf(handler)
+      if (idx >= 0) _rawHandlers.splice(idx, 1)
+    }
+  }
+
   function connect() {
     if (destroyed) return
     const token = auth.accessToken
@@ -47,6 +60,13 @@ export function useWebSocket(sessionId: string) {
       try { msg = JSON.parse(evt.data) } catch { return }
 
       const type = msg.type as string
+
+      // 1. Notify direct handlers synchronously (WebRTC signaling path)
+      for (const h of _rawHandlers) {
+        try { h(msg) } catch {}
+      }
+
+      // 2. Update the reactive events list (activity feed)
       const next = [{ type, payload: msg, timestamp: new Date() }, ...events.value]
       events.value = next.length > 100 ? next.slice(0, 100) : next
 
@@ -71,7 +91,10 @@ export function useWebSocket(sessionId: string) {
 
     ws.onclose = (evt) => {
       connectionStatus.value = 'disconnected'
-      if (!destroyed && evt.code !== 1000) {
+      // Do not retry on auth failures (4001 = unauthorized, 4003 = forbidden) —
+      // retrying won't help without a new token and will just spam the server.
+      const authFailure = evt.code === 4001 || evt.code === 4003
+      if (!destroyed && evt.code !== 1000 && !authFailure) {
         // Exponential backoff, max 30s
         retryTimeout = setTimeout(() => { retryDelay = Math.min(retryDelay * 2, 30000); connect() }, retryDelay)
       }
@@ -87,5 +110,5 @@ export function useWebSocket(sessionId: string) {
   connect()
   onUnmounted(disconnect)
 
-  return { roomState, events, connectionStatus, disconnect, ws: wsRef }
+  return { roomState, events, connectionStatus, disconnect, ws: wsRef, addMessageHandler }
 }

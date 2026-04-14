@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { format, startOfMonth, endOfMonth, startOfWeek, addDays, isSameMonth, parseISO, addMonths, subMonths } from 'date-fns'
+import { formatInTimeZone } from 'date-fns-tz'
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Session } from '@/stores/sessions'
 
@@ -32,12 +33,20 @@ function prevMonth() { currentDate.value = subMonths(currentDate.value, 1) }
 function nextMonth() { currentDate.value = addMonths(currentDate.value, 1) }
 
 const statusDot: Record<string, string> = {
-  scheduled: 'bg-blue-400', live: 'bg-green-400', completed: 'bg-gray-400', cancelled: 'bg-red-400',
+  scheduled: 'bg-blue-400', live: 'bg-green-400', ended: 'bg-gray-400', canceled: 'bg-red-400',
 }
 
+const calendarTz = computed(() => props.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone)
+
 function sessionsForDay(day: Date): Session[] {
-  const key = format(day, 'yyyy-MM-dd')
-  return props.sessions.filter(s => s.start_time.startsWith(key))
+  const key = formatInTimeZone(day, calendarTz.value, 'yyyy-MM-dd')
+  return props.sessions.filter(s => {
+    try {
+      return formatInTimeZone(parseISO(s.start_time), calendarTz.value, 'yyyy-MM-dd') === key
+    } catch {
+      return false
+    }
+  })
 }
 
 const VISIBLE_MAX = 3

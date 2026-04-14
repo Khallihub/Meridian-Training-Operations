@@ -48,7 +48,7 @@ export interface Instructor {
 export interface Promotion {
   id: string
   name: string
-  type: 'pct_off' | 'fixed_off' | 'bogo'
+  type: 'percent_off' | 'fixed_off' | 'threshold_fixed_off' | 'bogo_selected_workshops'
   value: number
   min_order_amount: number | null
   applies_to: string[] | 'all'
@@ -75,98 +75,98 @@ export interface AuditLog {
 export const adminApi = {
   // Users
   getUsers: async (params?: Record<string, unknown>) => {
-    const res = await client.get('/api/users', { params })
+    const res = await client.get('/api/v1/users', { params })
     return { items: res.data.items as UserRecord[], total: res.data.meta.total_count as number }
   },
   getUser: async (id: string) => {
-    const res = await client.get(`/api/users/${id}`)
+    const res = await client.get(`/api/v1/users/${id}`)
     return res.data as UserRecord
   },
   createUser: async (payload: Partial<UserRecord> & { password: string }) => {
-    const res = await client.post('/api/users', payload)
+    const res = await client.post('/api/v1/users', payload)
     return res.data as UserRecord
   },
   updateUser: async (id: string, payload: Partial<UserRecord>) => {
-    const res = await client.patch(`/api/users/${id}`, payload)
+    const res = await client.patch(`/api/v1/users/${id}`, payload)
     return res.data as UserRecord
   },
   deleteUser: async (id: string) => {
-    await client.delete(`/api/users/${id}`)
+    await client.delete(`/api/v1/users/${id}`)
   },
 
   // Locations
   getLocations: async () => {
-    const res = await client.get('/api/locations')
+    const res = await client.get('/api/v1/locations')
     return res.data as Location[]
   },
   createLocation: async (payload: Partial<Location>) => {
-    const res = await client.post('/api/locations', payload)
+    const res = await client.post('/api/v1/locations', payload)
     return res.data as Location
   },
   updateLocation: async (id: string, payload: Partial<Location>) => {
-    const res = await client.patch(`/api/locations/${id}`, payload)
+    const res = await client.patch(`/api/v1/locations/${id}`, payload)
     return res.data as Location
   },
 
   // Rooms
   getRooms: async (locationId: string) => {
-    const res = await client.get(`/api/locations/${locationId}/rooms`)
+    const res = await client.get(`/api/v1/locations/${locationId}/rooms`)
     return res.data as Room[]
   },
   createRoom: async (locationId: string, payload: { name: string; capacity: number }) => {
-    const res = await client.post(`/api/locations/${locationId}/rooms`, payload)
+    const res = await client.post(`/api/v1/locations/${locationId}/rooms`, payload)
     return res.data as Room
   },
 
   // Courses
   getCourses: async () => {
-    const res = await client.get('/api/courses')
+    const res = await client.get('/api/v1/courses')
     return res.data as Course[]
   },
   createCourse: async (payload: Partial<Course>) => {
-    const res = await client.post('/api/courses', payload)
+    const res = await client.post('/api/v1/courses', payload)
     return res.data as Course
   },
   updateCourse: async (id: string, payload: Partial<Course>) => {
-    const res = await client.patch(`/api/courses/${id}`, payload)
+    const res = await client.patch(`/api/v1/courses/${id}`, payload)
     return res.data as Course
   },
 
   // Instructors
   getInstructors: async () => {
-    const res = await client.get('/api/instructors')
+    const res = await client.get('/api/v1/instructors')
     return res.data as Instructor[]
   },
   createInstructor: async (payload: Partial<Instructor>) => {
-    const res = await client.post('/api/instructors', payload)
+    const res = await client.post('/api/v1/instructors', payload)
     return res.data as Instructor
   },
 
   // Promotions
   getPromotions: async () => {
-    const res = await client.get('/api/promotions')
+    const res = await client.get('/api/v1/promotions')
     return res.data as Promotion[]
   },
   createPromotion: async (payload: Partial<Promotion>) => {
-    const res = await client.post('/api/promotions', payload)
+    const res = await client.post('/api/v1/promotions', payload)
     return res.data as Promotion
   },
   updatePromotion: async (id: string, payload: Partial<Promotion>) => {
-    const res = await client.patch(`/api/promotions/${id}`, payload)
+    const res = await client.patch(`/api/v1/promotions/${id}`, payload)
     return res.data as Promotion
   },
   deletePromotion: async (id: string) => {
-    await client.delete(`/api/promotions/${id}`)
+    await client.delete(`/api/v1/promotions/${id}`)
   },
   previewPromotion: async (payload: object) => {
-    const res = await client.post('/api/promotions/preview', payload)
+    const res = await client.post('/api/v1/promotions/preview', payload)
     return res.data
   },
 
   // Audit logs
   getAuditLogs: async (params?: Record<string, unknown>) => {
     const clean = Object.fromEntries(Object.entries(params ?? {}).filter(([, v]) => v !== '' && v != null))
-    const res = await client.get('/api/audit-logs', { params: clean })
+    const res = await client.get('/api/v1/audit-logs', { params: clean })
     return { items: res.data.items as AuditLog[], total: res.data.meta.total_count as number }
   },
 }

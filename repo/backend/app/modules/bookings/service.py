@@ -27,6 +27,11 @@ class BookingService:
         if not session:
             raise NotFoundError("Session")
 
+        from app.modules.sessions.models import SessionStatus
+        _BOOKABLE = {SessionStatus.scheduled}
+        if session.status not in _BOOKABLE:
+            raise ConflictError(f"Session is not bookable (status: {session.status}).")
+
         if session.enrolled_count >= session.capacity:
             raise ConflictError("Session is at full capacity.")
 
@@ -34,16 +39,29 @@ class BookingService:
         if existing:
             raise ConflictError("You already have an active booking for this session.")
 
-        booking = Booking(session_id=payload.session_id, learner_id=learner_id)
+        booking = Booking(session_id=payload.session_id, learner_id=learner_id, status=BookingStatus.requested)
         booking = await self._repo.create(booking)
         return BookingResponse.model_validate(booking)
 
-    async def confirm(self, booking_id: uuid.UUID, actor_id: str) -> BookingResponse:
+    async def confirm(self, booking_id: uuid.UUID, actor_id: str, caller_role: str | None = None) -> BookingResponse:
         booking = await self._repo.get(booking_id)
         if not booking:
             raise NotFoundError("Booking")
-        if booking.status != BookingStatus.pending:
+        if booking.status != BookingStatus.requested:
             raise ConflictError(f"Cannot confirm booking with status {booking.status}.")
+
+        # Instructors may only confirm bookings for sessions they own.
+        # session.instructor_id is instructors.id, not users.id — must resolve via Instructor record.
+        if caller_role == "instructor":
+            session_check = await self._session_repo.get(booking.session_id)
+            from sqlalchemy import select as _sel_i
+            from app.modules.instructors.models import Instructor as _Instructor
+            _instr_result = await self._db.execute(
+                _sel_i(_Instructor).where(_Instructor.user_id == uuid.UUID(actor_id))
+            )
+            _instructor = _instr_result.scalar_one_or_none()
+            if not session_check or not _instructor or session_check.instructor_id != _instructor.id:
+                raise ForbiddenError("Instructors can only confirm bookings for their own sessions.")
 
         # Re-check capacity with a row lock to prevent overbooking under concurrency
         from sqlalchemy import select as _select
@@ -78,7 +96,7 @@ class BookingService:
         if caller_role != "admin" and str(booking.learner_id) != actor_id:
             raise ForbiddenError("Not your booking")
 
-        if booking.status not in (BookingStatus.pending, BookingStatus.confirmed):
+        if booking.status not in (BookingStatus.requested, BookingStatus.confirmed):
             raise ConflictError(f"Cannot reschedule booking with status {booking.status}.")
 
         from app.modules.policy.service import get_policy
@@ -103,7 +121,7 @@ class BookingService:
         old_session_id = booking.session_id
         booking.rescheduled_from_id = booking.id
         booking.session_id = payload.new_session_id
-        booking.status = BookingStatus.rescheduled
+        booking.status = BookingStatus.rescheduled_out
         await self._repo.save(booking)
 
         # Increment new session count
@@ -122,7 +140,7 @@ class BookingService:
         if caller_role != "admin" and str(booking.learner_id) != actor_id:
             raise ForbiddenError("Not your booking")
 
-        if booking.status in (BookingStatus.cancelled, BookingStatus.no_show):
+        if booking.status in (BookingStatus.canceled, BookingStatus.no_show, BookingStatus.completed, BookingStatus.rescheduled_out):
             raise ConflictError(f"Booking already in terminal state: {booking.status}.")
 
         learner_initiated = caller_role == "learner"
@@ -142,7 +160,7 @@ class BookingService:
                 "enrolled_count": session.enrolled_count,
             })
 
-        booking.status = BookingStatus.cancelled
+        booking.status = BookingStatus.canceled
         booking.cancelled_at = datetime.now(UTC)
         booking.cancellation_reason = payload.reason if payload else None
         await self._repo.save(booking)
@@ -151,15 +169,48 @@ class BookingService:
 
     async def list(
         self, learner_id: uuid.UUID | None, session_id: uuid.UUID | None,
-        status: BookingStatus | None, page: int, page_size: int
+        status: BookingStatus | None, page: int, page_size: int,
+        instructor_id: uuid.UUID | None = None,
+        finance_payment_scoped: bool = False,
     ) -> tuple[list[BookingResponse], int]:
-        bookings, total = await self._repo.list(learner_id, session_id, status, page, page_size)
+        bookings, total = await self._repo.list(
+            learner_id, session_id, status, page, page_size,
+            instructor_id=instructor_id,
+            finance_payment_scoped=finance_payment_scoped,
+        )
         return [BookingResponse.model_validate(b) for b in bookings], total
 
     async def get(self, booking_id: uuid.UUID, caller_id: str | None = None, caller_role: str | None = None) -> BookingResponse:
         b = await self._repo.get(booking_id)
         if not b:
             raise NotFoundError("Booking")
-        if caller_role not in ("admin", "finance", "dataops") and caller_id and str(b.learner_id) != caller_id:
-            raise ForbiddenError("Not your booking")
+        if caller_role != "admin" and caller_id and str(b.learner_id) != caller_id:
+            if caller_role == "instructor":
+                session = await self._session_repo.get(b.session_id)
+                # session.instructor_id is instructors.id, not users.id — resolve via Instructor record.
+                from sqlalchemy import select as _sel_i2
+                from app.modules.instructors.models import Instructor as _Instructor2
+                _instr_result2 = await self._db.execute(
+                    _sel_i2(_Instructor2).where(_Instructor2.user_id == uuid.UUID(caller_id))
+                )
+                _instructor2 = _instr_result2.scalar_one_or_none()
+                if not session or not _instructor2 or session.instructor_id != _instructor2.id:
+                    raise ForbiddenError("Not your booking")
+            elif caller_role == "finance":
+                # Finance may access a booking only when an order exists for the same
+                # learner+session, i.e. there is a payment context to justify access.
+                from sqlalchemy import select, exists as _exists, and_ as _and_
+                from app.modules.checkout.models import Order as _Order, OrderItem as _OrderItem
+                stmt = select(_exists().where(
+                    _and_(
+                        _OrderItem.session_id == b.session_id,
+                        _Order.learner_id == b.learner_id,
+                        _OrderItem.order_id == _Order.id,
+                    )
+                ))
+                result = await self._db.execute(stmt)
+                if not result.scalar():
+                    raise ForbiddenError("Not your booking")
+            else:
+                raise ForbiddenError("Not your booking")
         return BookingResponse.model_validate(b)

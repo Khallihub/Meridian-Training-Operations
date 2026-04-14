@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted, watch, nextTick, reactive } from 'vue'
+import { ref, computed, onUnmounted, nextTick, reactive } from 'vue'
 import { X, Wifi, WifiOff, Mic, MicOff, Video, VideoOff, Monitor, Circle, StopCircle } from 'lucide-vue-next'
 import type { Session } from '@/stores/sessions'
 import { useWebSocket } from '@/composables/useWebSocket'
@@ -13,7 +13,7 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 const auth = useAuthStore()
 const isInstructor = computed(() => auth.isInstructor || auth.isAdmin)
 
-const { roomState, events, connectionStatus, ws: wsRef } = useWebSocket(props.session.id)
+const { roomState, events, connectionStatus, ws: wsRef, addMessageHandler } = useWebSocket(props.session.id)
 
 // ── Media state ───────────────────────────────────────────────────────────────
 const localVideo = ref<HTMLVideoElement | null>(null)
@@ -24,6 +24,9 @@ const screenSharing = ref(false)
 const recording = ref(false)
 const uploadState = reactive({ uploading: false, done: false, error: '' })
 const hasStream = computed(() => camOn.value || screenSharing.value)
+// Reactive flag set when the remote stream arrives — used to hide the "Waiting" overlay.
+// Cannot use remoteVideo?.srcObject directly because DOM property mutations are not reactive.
+const hasRemoteStream = ref(false)
 
 // localStream is always a real MediaStream — tracks are added/removed from it
 const localStream = new MediaStream()
@@ -50,7 +53,7 @@ function eventLabel(evt: { type: string; payload: Record<string, unknown> }) {
   return eventLabels[evt.type]?.(evt.payload) ?? evt.type
 }
 const isCompleted = computed(() =>
-  roomState.value?.session_status === 'completed' || roomState.value?.session_status === 'cancelled'
+  roomState.value?.session_status === 'ended' || roomState.value?.session_status === 'canceled'
 )
 
 // ── WebRTC ────────────────────────────────────────────────────────────────────
@@ -58,28 +61,106 @@ const isCompleted = computed(() =>
 const peerConnections = new Map<string, RTCPeerConnection>()
 // All known learner IDs in the room — tracked even before streaming starts
 const knownLearnerIds = new Set<string>()
+// ICE candidate buffer: holds candidates that arrive before setRemoteDescription
+// completes; flushed immediately after remote description is set.
+const iceCandidateQueue = new Map<string, RTCIceCandidateInit[]>()
+
+// ── Sequential signaling queue ────────────────────────────────────────────────
+// WebRTC setup involves async operations (setRemoteDescription, createAnswer, …).
+// Using a Vue watch callback is unsafe because Vue fires async watchers
+// concurrently — a webrtc_ice message can run while webrtc_offer is still
+// awaiting setRemoteDescription, causing addIceCandidate to fail silently.
+// Solution: every incoming WebSocket message is pushed onto a plain array queue
+// and drained one-at-a-time by a single async loop.
+const _sigQueue: Record<string, unknown>[] = []
+let _sigDraining = false
+
+function _enqueue(msg: Record<string, unknown>) {
+  _sigQueue.push(msg)
+  if (!_sigDraining) _drainQueue()
+}
+
+async function _drainQueue() {
+  _sigDraining = true
+  while (_sigQueue.length > 0) {
+    const msg = _sigQueue.shift()!
+    try {
+      await _handleSignal(msg)
+    } catch (err) {
+      // A bad message (e.g. an SDP answer for a now-replaced peer connection)
+      // must not kill the queue permanently. Log and continue so subsequent
+      // signals (ICE candidates, new offers) are still processed.
+      console.error('[LiveRoom] _handleSignal error, dropping message:', (msg as any).type, err)
+    }
+  }
+  _sigDraining = false
+}
+
+// Register the direct (synchronous) handler so every WS message is enqueued
+// before Vue's reactivity system has a chance to batch or skip anything.
+const _removeHandler = addMessageHandler(_enqueue)
+
+const _role = computed(() => isInstructor.value ? 'INSTRUCTOR' : 'LEARNER')
 
 function sendWs(msg: object) {
-  if (wsRef.value?.readyState === WebSocket.OPEN) {
-    wsRef.value.send(JSON.stringify(msg))
+  const state = wsRef.value?.readyState
+  if (state === WebSocket.OPEN) {
+    wsRef.value!.send(JSON.stringify(msg))
+  } else {
+    console.warn(`[LiveRoom][${_role.value}] sendWs DROPPED (ws state=${state})`, msg)
   }
 }
 
 function createPeerConnectionFor(peerId: string): RTCPeerConnection {
   const existing = peerConnections.get(peerId)
-  if (existing) { existing.close(); peerConnections.delete(peerId) }
+  if (existing) {
+    console.log(`[LiveRoom][${_role.value}] closing old PC for peer=${peerId}`)
+    existing.close(); peerConnections.delete(peerId)
+  }
 
   const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
+  console.log(`[LiveRoom][${_role.value}] created PC for peer=${peerId}`)
 
   pc.onicecandidate = (e) => {
-    if (e.candidate) sendWs({ type: 'webrtc_ice', candidate: e.candidate, target_user_id: peerId })
+    if (e.candidate) {
+      console.log(`[LiveRoom][${_role.value}] sending ICE to peer=${peerId}`)
+      sendWs({ type: 'webrtc_ice', candidate: e.candidate, target_user_id: peerId })
+    } else {
+      console.log(`[LiveRoom][${_role.value}] ICE gathering complete for peer=${peerId}`)
+    }
   }
 
   pc.ontrack = (e) => {
-    // Learner side: receive instructor stream
-    if (!isInstructor.value && remoteVideo.value && e.streams[0]) {
-      remoteVideo.value.srcObject = e.streams[0]
+    console.log(`[LiveRoom][${_role.value}] ontrack fired, streams=${e.streams.length}, tracks=${e.track.kind}, isInstructor=${isInstructor.value}`)
+    if (!isInstructor.value && e.streams[0]) {
+      nextTick(() => {
+        if (remoteVideo.value) {
+          remoteVideo.value.srcObject = e.streams[0]
+          hasRemoteStream.value = true
+          remoteVideo.value.play().catch((err) => {
+            console.warn(`[LiveRoom][LEARNER] play() rejected:`, err)
+          })
+          console.log(`[LiveRoom][LEARNER] stream attached, hasRemoteStream=true`)
+        } else {
+          console.error(`[LiveRoom][LEARNER] ontrack fired but remoteVideo ref is null!`)
+        }
+      })
     }
+  }
+
+  pc.onconnectionstatechange = () => {
+    console.log(`[LiveRoom][${_role.value}] connectionState=${pc.connectionState} peer=${peerId}`)
+    if (!isInstructor.value &&
+        (pc.connectionState === 'disconnected' ||
+         pc.connectionState === 'failed' ||
+         pc.connectionState === 'closed')) {
+      hasRemoteStream.value = false
+      if (remoteVideo.value) remoteVideo.value.srcObject = null
+    }
+  }
+
+  pc.oniceconnectionstatechange = () => {
+    console.log(`[LiveRoom][${_role.value}] iceConnectionState=${pc.iceConnectionState} peer=${peerId}`)
   }
 
   peerConnections.set(peerId, pc)
@@ -88,53 +169,143 @@ function createPeerConnectionFor(peerId: string): RTCPeerConnection {
 
 // Instructor: send offer to a specific learner, adding all current tracks
 async function offerToLearner(learnerId: string) {
-  if (!isInstructor.value || localStream.getTracks().length === 0) return
+  if (!isInstructor.value) { console.warn('[LiveRoom] offerToLearner called but not instructor'); return }
+  if (localStream.getTracks().length === 0) { console.warn('[LiveRoom] offerToLearner: no local tracks'); return }
+  console.log(`[LiveRoom][INSTRUCTOR] offerToLearner learnerId=${learnerId}, tracks=${localStream.getTracks().length}`)
   const pc = createPeerConnectionFor(learnerId)
   localStream.getTracks().forEach(t => pc.addTrack(t, localStream))
   const offer = await pc.createOffer()
   await pc.setLocalDescription(offer)
+  console.log(`[LiveRoom][INSTRUCTOR] offer created and set, sending to learner=${learnerId}`)
   sendWs({ type: 'webrtc_offer', sdp: offer, target_user_id: learnerId })
 }
 
-watch(events, async (evts) => {
-  const msg = evts[0]?.payload as any
-  if (!msg) return
+async function _handleSignal(msg: Record<string, unknown>) {
+  const type = msg.type as string
+  if (type !== 'webrtc_ice') {
+    console.log(`[LiveRoom][${_role.value}] _handleSignal type=${type}`, msg)
+  }
 
-  if (msg.type === 'peer_joined' && isInstructor.value && msg.role !== 'instructor') {
-    // Track the learner regardless of stream state
-    knownLearnerIds.add(msg.user_id)
-    // If we're already streaming, send them an offer immediately
+  if (type === 'peer_joined' && isInstructor.value && msg.role !== 'instructor') {
+    const learnerId = msg.user_id as string
+    knownLearnerIds.add(learnerId)
+    console.log(`[LiveRoom][INSTRUCTOR] peer_joined learnerId=${learnerId}, streaming=${localStream.getTracks().length > 0}`)
     if (localStream.getTracks().length > 0) {
-      await offerToLearner(msg.user_id)
+      // Only send a new offer if there is no healthy peer connection already.
+      // The learner may also send a webrtc_request (from room_peers) which
+      // would trigger a second offer and cause a double-offer race.
+      const existing = peerConnections.get(learnerId)
+      const isHealthy = !!existing &&
+        existing.connectionState !== 'failed' &&
+        existing.connectionState !== 'closed' &&
+        existing.connectionState !== 'disconnected'
+      if (!isHealthy) {
+        await offerToLearner(learnerId)
+      } else {
+        console.log(`[LiveRoom][INSTRUCTOR] peer_joined: skipping offer, healthy PC exists for ${learnerId}`)
+      }
     }
-  } else if (msg.type === 'room_peers' && isInstructor.value) {
-    // Already-present peers when we joined — track all, offer if streaming
-    for (const peer of (msg.peers ?? []) as { user_id: string }[]) {
+
+  } else if (type === 'peer_joined' && !isInstructor.value && msg.role !== 'learner') {
+    // Instructor (or admin) joined the room after us. Send a webrtc_request so
+    // they know to offer their stream once they start streaming.
+    const instructorId = msg.user_id as string
+    console.log(`[LiveRoom][LEARNER] peer_joined from instructor=${instructorId}, sending webrtc_request`)
+    sendWs({ type: 'webrtc_request', target_user_id: instructorId })
+
+  } else if (type === 'room_peers' && isInstructor.value) {
+    const peers = (msg.peers ?? []) as { user_id: string }[]
+    console.log(`[LiveRoom][INSTRUCTOR] room_peers count=${peers.length}`, peers)
+    for (const peer of peers) {
       knownLearnerIds.add(peer.user_id)
       if (localStream.getTracks().length > 0) {
         await offerToLearner(peer.user_id)
       }
     }
-  } else if (msg.type === 'webrtc_offer' && !isInstructor.value) {
-    // Learner receives offer from instructor
+
+  } else if (type === 'room_peers' && !isInstructor.value) {
+    // Learner joined and found peers already in the room. Send a webrtc_request to
+    // each peer so the instructor knows to send an offer. This covers the case where
+    // the instructor is already in the room but hadn't started streaming yet when the
+    // learner joined (so the peer_joined offer was suppressed), or where the initial
+    // offer was lost. The instructor will call offerToLearner() if they have tracks.
+    const peers = (msg.peers ?? []) as { user_id: string }[]
+    console.log(`[LiveRoom][LEARNER] room_peers, requesting stream from ${peers.length} peer(s)`)
+    for (const peer of peers) {
+      sendWs({ type: 'webrtc_request', target_user_id: peer.user_id })
+    }
+
+  } else if (type === 'webrtc_request' && isInstructor.value) {
+    const requesterId = msg.from_user_id as string
+    knownLearnerIds.add(requesterId)
+    if (localStream.getTracks().length > 0) {
+      // Only create a new offer if there is no healthy peer connection already.
+      // peer_joined (which fires just before room_peers reaches the learner) often
+      // creates a PC first. Sending a second offer would close that in-progress PC,
+      // cause the learner to send a mismatched answer, and throw in setRemoteDescription
+      // — permanently killing the signaling queue before the try-catch was added.
+      const existing = peerConnections.get(requesterId)
+      const isHealthy = !!existing &&
+        existing.connectionState !== 'failed' &&
+        existing.connectionState !== 'closed' &&
+        existing.connectionState !== 'disconnected'
+      console.log(`[LiveRoom][INSTRUCTOR] webrtc_request from=${requesterId}, streaming=true, existingPc=${existing?.connectionState ?? 'none'}, skip=${isHealthy}`)
+      if (!isHealthy) {
+        await offerToLearner(requesterId)
+      }
+    } else {
+      console.log(`[LiveRoom][INSTRUCTOR] webrtc_request from=${requesterId}, no local tracks yet — learner added to knownLearnerIds`)
+    }
+
+  } else if (type === 'webrtc_offer' && !isInstructor.value) {
     const instructorId = msg.from_user_id as string
+    console.log(`[LiveRoom][LEARNER] received webrtc_offer from=${instructorId}`)
     const pc = createPeerConnectionFor(instructorId)
-    await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
+    await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp as RTCSessionDescriptionInit))
+    console.log(`[LiveRoom][LEARNER] setRemoteDescription done, flushing ${iceCandidateQueue.get(instructorId)?.length ?? 0} queued ICE candidates`)
+    for (const c of iceCandidateQueue.get(instructorId) ?? []) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(c)) } catch {}
+    }
+    iceCandidateQueue.delete(instructorId)
     const answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
+    console.log(`[LiveRoom][LEARNER] answer created, sending to instructor=${instructorId}`)
     sendWs({ type: 'webrtc_answer', sdp: answer, target_user_id: instructorId })
-  } else if (msg.type === 'webrtc_answer' && isInstructor.value) {
-    const pc = peerConnections.get(msg.from_user_id)
-    if (pc) await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
-  } else if (msg.type === 'webrtc_ice') {
-    const pc = peerConnections.get(msg.from_user_id)
-    if (pc) try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)) } catch {}
-  } else if (msg.type === 'peer_left' && isInstructor.value) {
-    knownLearnerIds.delete(msg.user_id)
-    const pc = peerConnections.get(msg.user_id)
-    if (pc) { pc.close(); peerConnections.delete(msg.user_id) }
+
+  } else if (type === 'webrtc_answer' && isInstructor.value) {
+    const fromId = msg.from_user_id as string
+    console.log(`[LiveRoom][INSTRUCTOR] received webrtc_answer from=${fromId}`)
+    const pc = peerConnections.get(fromId)
+    if (pc) {
+      await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp as RTCSessionDescriptionInit))
+      console.log(`[LiveRoom][INSTRUCTOR] setRemoteDescription(answer) done, flushing ${iceCandidateQueue.get(fromId)?.length ?? 0} queued ICE`)
+      for (const c of iceCandidateQueue.get(fromId) ?? []) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(c)) } catch {}
+      }
+      iceCandidateQueue.delete(fromId)
+    } else {
+      console.warn(`[LiveRoom][INSTRUCTOR] webrtc_answer: no PC found for fromId=${fromId}`)
+    }
+
+  } else if (type === 'webrtc_ice') {
+    const fromId = msg.from_user_id as string
+    const candidate = msg.candidate as RTCIceCandidateInit
+    const pc = peerConnections.get(fromId)
+    if (pc?.remoteDescription) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(candidate)) } catch {}
+    } else {
+      const q = iceCandidateQueue.get(fromId) ?? []
+      q.push(candidate)
+      iceCandidateQueue.set(fromId, q)
+    }
+
+  } else if (type === 'peer_left' && isInstructor.value) {
+    const uid = msg.user_id as string
+    knownLearnerIds.delete(uid)
+    const pc = peerConnections.get(uid)
+    if (pc) { pc.close(); peerConnections.delete(uid) }
   }
-}, { deep: false })
+}
 
 // ── Local video preview ───────────────────────────────────────────────────────
 // Called any time tracks are added/removed so the <video> element stays in sync
@@ -285,11 +456,14 @@ function getSupportedMimeType(): string {
 
 // ── Cleanup ───────────────────────────────────────────────────────────────────
 onUnmounted(() => {
+  _removeHandler()
   localStream.getTracks().forEach(t => t.stop())
   if (recording.value) mediaRecorder?.stop()
   peerConnections.forEach(pc => pc.close())
   peerConnections.clear()
   knownLearnerIds.clear()
+  iceCandidateQueue.clear()
+  _sigQueue.length = 0
 })
 </script>
 
@@ -343,7 +517,7 @@ onUnmounted(() => {
           <div v-if="!isInstructor"
                class="relative w-full max-w-3xl aspect-video bg-gray-900 rounded-lg overflow-hidden border border-white/10">
             <video ref="remoteVideo" autoplay playsinline class="w-full h-full object-contain" />
-            <div v-if="!remoteVideo?.srcObject"
+            <div v-if="!hasRemoteStream"
                  class="absolute inset-0 flex items-center justify-center text-gray-500 text-sm select-none">
               Waiting for instructor stream…
             </div>

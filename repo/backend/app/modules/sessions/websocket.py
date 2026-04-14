@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Live Room WebSocket"])
 
 ROOM_CHANNEL_PREFIX = "ws:room:"
+ROOM_MEMBERS_PREFIX = "ws:room:members:"
 
 
 class RoomConnectionManager:
@@ -37,7 +38,7 @@ class RoomConnectionManager:
         self._rooms: dict[str, dict[str, WebSocket]] = defaultdict(dict)
 
     async def connect(self, session_id: str, user_id: str, ws: WebSocket) -> None:
-        await ws.accept()
+        # accept() is called by the endpoint before connect() — do not call it here.
         self._rooms[session_id][user_id] = ws
         logger.debug("WS connected: session=%s user=%s total=%d", session_id, user_id, len(self._rooms[session_id]))
 
@@ -88,6 +89,29 @@ class RoomConnectionManager:
 
     def peer_ids(self, session_id: str, exclude_user_id: str) -> list[str]:
         return [uid for uid in self._rooms.get(session_id, {}) if uid != exclude_user_id]
+
+    # ------------------------------------------------------------------
+    # Cross-worker membership via Redis sets
+    # ------------------------------------------------------------------
+
+    async def add_member(self, session_id: str, user_id: str) -> None:
+        """Register user in the Redis membership set (visible to all workers)."""
+        from app.core.security import get_redis
+        await get_redis().sadd(f"{ROOM_MEMBERS_PREFIX}{session_id}", user_id)
+
+    async def remove_member(self, session_id: str, user_id: str) -> None:
+        """Remove user from the Redis membership set."""
+        from app.core.security import get_redis
+        r = get_redis()
+        await r.srem(f"{ROOM_MEMBERS_PREFIX}{session_id}", user_id)
+        if await r.scard(f"{ROOM_MEMBERS_PREFIX}{session_id}") == 0:
+            await r.delete(f"{ROOM_MEMBERS_PREFIX}{session_id}")
+
+    async def get_peer_ids(self, session_id: str, exclude_user_id: str) -> list[str]:
+        """Return all room members across all workers, excluding one user."""
+        from app.core.security import get_redis
+        members = await get_redis().smembers(f"{ROOM_MEMBERS_PREFIX}{session_id}")
+        return [uid for uid in members if uid != exclude_user_id]
 
     async def send_state_snapshot(self, ws: WebSocket, session_id: str, db: AsyncSession) -> None:
         from sqlalchemy import func, select
@@ -154,7 +178,7 @@ async def redis_room_subscriber() -> None:
         await redis.aclose()
         raise
     except Exception:
-        logger.exception("Redis room subscriber crashed; room events may be lost.")
+        logger.exception("Redis room subscriber crashed — will be restarted by the supervisor.")
         await redis.aclose()
 
 
@@ -168,15 +192,42 @@ async def session_room_ws(
     WebSocket endpoint for live session room.
     Authenticate via ?token=<access_jwt>.
     """
+    # Accept the HTTP→WebSocket upgrade immediately.  Close codes such as 4001
+    # and 4003 are part of the WebSocket protocol and can only be sent after
+    # the HTTP 101 handshake completes.  Calling close() before accept() causes
+    # uvicorn to drop the TCP connection, which the browser reports as a generic
+    # "WebSocket connection failed" error rather than a clean rejection.
+    await websocket.accept()
+
     # Authenticate
     try:
         user = await get_ws_user(websocket, db)
     except Exception:
-        return  # get_ws_user closes the socket
+        return  # get_ws_user sends close(4001) on expected auth failures
 
-    # Verify user has access (confirmed booking, or admin/instructor)
-    if user.role not in ("admin", "instructor"):
-        from sqlalchemy import select, and_
+    # Verify user has access to this specific session room
+    from sqlalchemy import select, and_
+    if user.role == "instructor":
+        # Instructor must be assigned to the session
+        from app.modules.instructors.models import Instructor
+        from app.modules.sessions.models import Session as _Session
+        instr_result = await db.execute(
+            select(Instructor).where(Instructor.user_id == user.id)
+        )
+        instructor = instr_result.scalar_one_or_none()
+        if instructor:
+            sess_result = await db.execute(
+                select(_Session).where(_Session.id == session_id)
+            )
+            sess = sess_result.scalar_one_or_none()
+            if not sess or sess.instructor_id != instructor.id:
+                await websocket.close(code=4003)
+                return
+        else:
+            await websocket.close(code=4003)
+            return
+    elif user.role != "admin":
+        # Learner (and any other role): require confirmed booking
         from app.modules.bookings.models import Booking, BookingStatus
         result = await db.execute(
             select(Booking).where(
@@ -193,16 +244,18 @@ async def session_room_ws(
 
     user_id = str(user.id)
     await room_manager.connect(session_id, user_id, websocket)
+    await room_manager.add_member(session_id, user_id)
     # Send current room state on join
     await room_manager.send_state_snapshot(websocket, session_id, db)
     # Notify others that a peer joined (via Redis → all workers)
     await room_manager.broadcast(session_id, {
         "type": "peer_joined", "user_id": user_id, "role": user.role,
     }, exclude_user_id=user_id)
-    # Tell the joining user which peers are already in the room (local only — best effort)
+    # Tell the joining user which peers are already in the room (cross-worker via Redis)
+    peer_ids = await room_manager.get_peer_ids(session_id, user_id)
     await websocket.send_text(json.dumps({
         "type": "room_peers",
-        "peers": [{"user_id": uid} for uid in room_manager.peer_ids(session_id, user_id)],
+        "peers": [{"user_id": uid} for uid in peer_ids],
     }))
 
     try:
@@ -211,7 +264,7 @@ async def session_room_ws(
             try:
                 msg = json.loads(raw)
                 msg_type = msg.get("type", "")
-                if msg_type in ("webrtc_offer", "webrtc_answer", "webrtc_ice"):
+                if msg_type in ("webrtc_offer", "webrtc_answer", "webrtc_ice", "webrtc_request"):
                     msg["from_user_id"] = user_id
                     target = msg.get("target_user_id")
                     if target:
@@ -219,9 +272,12 @@ async def session_room_ws(
                     else:
                         await room_manager.broadcast(session_id, msg, exclude_user_id=user_id)
             except Exception:
-                pass
+                logger.exception("Error routing WS message session=%s user=%s", session_id, user_id)
     except WebSocketDisconnect:
+        pass
+    finally:
         room_manager.disconnect(session_id, user_id)
+        await room_manager.remove_member(session_id, user_id)
         await room_manager.broadcast(session_id, {
             "type": "peer_left", "user_id": user_id, "role": user.role,
         })

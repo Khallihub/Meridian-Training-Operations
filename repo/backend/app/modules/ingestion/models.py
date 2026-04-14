@@ -11,17 +11,21 @@ from app.core.database import Base
 
 class IngestionSourceType(str, enum.Enum):
     kafka = "kafka"
-    logstash = "logstash"
     flume = "flume"
-    batch_file = "batch_file"
-    cdc_mysql = "cdc_mysql"
-    cdc_pg = "cdc_pg"
+    logstash = "logstash"
+    file = "file"
+    mysql_cdc = "mysql_cdc"
+    postgres_cdc = "postgres_cdc"
 
 
 class IngestionRunStatus(str, enum.Enum):
+    queued = "queued"
     running = "running"
-    success = "success"
+    succeeded = "succeeded"
+    partial_failed = "partial_failed"
     failed = "failed"
+    canceled = "canceled"
+    resolved = "resolved"
 
 
 class IngestionSource(Base):

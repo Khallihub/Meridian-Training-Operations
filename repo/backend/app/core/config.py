@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
     # Pagination
-    DEFAULT_PAGE_SIZE: int = 50
+    DEFAULT_PAGE_SIZE: int = 25
     MAX_PAGE_SIZE: int = 200
     EXPORT_ROW_LIMIT: int = 50_000
 
@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # Job health thresholds
     JOB_FAILURE_RATE_THRESHOLD_PCT: float = 2.0
     JOB_LATENESS_THRESHOLD_MINUTES: int = 10
+
+    # Prometheus scrape token — set a strong random value in production
+    PROMETHEUS_SCRAPE_TOKEN: str = "change-me-prometheus-scrape-token"
 
 
 @lru_cache

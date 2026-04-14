@@ -18,7 +18,7 @@ export interface Session {
   capacity: number
   enrolled_count: number
   buffer_minutes: number
-  status: 'scheduled' | 'live' | 'completed' | 'cancelled'
+  status: 'draft' | 'scheduled' | 'live' | 'ended' | 'recording_processing' | 'recording_published' | 'closed_no_recording' | 'canceled' | 'archived'
   recurrence_rule_id: string | null
   created_by: string
   created_at: string
@@ -84,10 +84,15 @@ export const useSessionsStore = defineStore('sessions', () => {
     return updated
   }
 
-  async function complete(id: string) {
-    const updated = await sessionsApi.complete(id)
+  async function end(id: string) {
+    const updated = await sessionsApi.end(id)
     if (currentSession.value?.id === id) currentSession.value = updated
     return updated
+  }
+
+  /** @deprecated use end() */
+  async function complete(id: string) {
+    return end(id)
   }
 
   async function fetchRoster(id: string) {
@@ -98,6 +103,6 @@ export const useSessionsStore = defineStore('sessions', () => {
   return {
     weekSessions, monthlySessions, currentSession, roster, loading,
     fetchWeek, fetchMonth, fetchOne, create, createRecurring,
-    update, cancel, goLive, complete, fetchRoster,
+    update, cancel, goLive, end, complete, fetchRoster,
   }
 })

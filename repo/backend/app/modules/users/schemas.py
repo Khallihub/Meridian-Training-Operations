@@ -43,6 +43,19 @@ class UserResponse(BaseModel):
 
 
 class UserDetailResponse(UserResponse):
-    """Admin-only: includes unmasked fields."""
+    """Admin-only: same masked view as UserResponse.
+
+    Unmasked PII is only available via the dedicated POST /users/{id}/unmask
+    endpoint, which requires an explicit reason and emits an audit event.
+    """
+
+
+class UserUnmaskResponse(BaseModel):
+    """Returned exclusively by the /unmask endpoint."""
+    id: uuid.UUID
+    username: str
     email_unmasked: str | None = None
     phone_unmasked: str | None = None
+    reason: str
+
+    model_config = {"from_attributes": True}

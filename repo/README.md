@@ -1,76 +1,92 @@
-# Meridian Training Operations System — Backend
+# Meridian Training Operations System
 
-Production-grade, fully offline training management platform.
+A full-stack training operations platform for managing courses, sessions, bookings, attendance, replay access, checkout/payments, and operational monitoring. The stack is container-first and designed to run locally with Docker Compose.
 
-## Start
+## Architecture & Tech Stack
 
-```bash
-docker compose up
+* **Frontend:** Vue 3, TypeScript, Vite, TailwindCSS, Pinia, Vue Router
+* **Backend:** Python 3.11, FastAPI, SQLAlchemy (async), Alembic, Celery
+* **Database:** PostgreSQL 15
+* **Containerization:** Docker & Docker Compose (Required)
+
+## Project Structure
+
+*Below is this repository's structure (trimmed to key paths)*
+
+```text
+.
+├── backend/                    # FastAPI app, Alembic migrations, backend Dockerfile
+│   ├── app/
+│   ├── alembic/
+│   ├── tests/
+│   └── .env.example            # Example backend environment variables
+├── frontend/                   # Vue SPA and frontend Dockerfile
+├── monitoring/                 # Prometheus/Grafana config
+├── nginx/                      # Reverse-proxy config and Dockerfile
+├── docker-compose.yml          # Multi-container orchestration - MANDATORY
+├── run_tests.sh                # Standardized test execution script - MANDATORY
+└── README.md                   # Project documentation - MANDATORY
 ```
 
-All services build automatically. No manual setup required.
+## Prerequisites
 
-## Service URLs
+To ensure a consistent environment, this project is designed to run within containers. You must have the following installed:
+* [Docker](https://docs.docker.com/get-docker/)
+* [Docker Compose](https://docs.docker.com/compose/install/)
 
-| Service | URL |
-|---|---|
-| API | http://localhost/api |
-| API Docs (Swagger) | http://localhost/api/docs |
-| API Docs (ReDoc) | http://localhost/api/redoc |
-| MinIO Console | http://localhost:9001 (minioadmin / minioadmin123) |
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 (admin / admin) |
+## Running the Application
 
-## Verification
+1. **Build and Start Containers:**
+  ```bash
+  docker compose up --build -d
+  ```
 
-```bash
-# Health check
-curl http://localhost/api/monitoring/health
-# → {"status": "ok", "timestamp": "..."}
+2. **Environment File (Optional Local Override):**
+  If you want backend environment overrides, copy the example env file:
+  ```bash
+  cp backend/.env.example backend/.env
+  ```
 
-# Login with default admin
-curl -X POST http://localhost/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "Admin@Meridian1"}'
-```
+3. **Access the App:**
+  * Frontend: `http://localhost`
+  * Backend API: `http://localhost/api/v1`
+  * API Documentation: `http://localhost/api/v1/docs`
+  * ReDoc: `http://localhost/api/v1/redoc`
+  * Prometheus: `http://localhost:19090`
+  * Grafana: `http://localhost:3000`
 
-## Default Credentials
+4. **Stop the Application:**
+  ```bash
+  docker compose down -v
+  ```
 
-| Role | Username | Password |
-|---|---|---|
-| Admin | `admin` | `Admin@Meridian1` |
+## Testing
 
-**Change the admin password immediately after first login.**
+All unit/integration tests for backend and frontend are executed via a single standardized script.
 
-## Configuration
-
-Copy `backend/.env.example` to `backend/.env` for local override. All secrets are loaded from environment variables. `docker-compose.yml` contains **development-only defaults** — these must be replaced with strong, unique values before any production deployment.
-
-Key secrets to rotate in production:
-- `SECRET_KEY` — JWT signing key
-- `FIELD_ENCRYPTION_KEY` — Fernet key for PII encryption
-- `PAYMENT_SIGNATURE_SECRET` — HMAC key for terminal callbacks
-- `MINIO_SECRET_KEY` — MinIO credentials
-
-## Running Tests
+Run:
 
 ```bash
-# Inside the backend container or with local Python env:
-docker compose exec backend pytest tests/ -v --cov=app --cov-report=term-missing
+chmod +x run_tests.sh
+./run_tests.sh
 ```
 
-## Architecture
+Useful options:
 
-- **Backend**: FastAPI on port 8000, proxied by Nginx on port 80
-- **Database**: PostgreSQL 15 — all state persisted here
-- **Cache/Queue**: Redis — JWT blocklist, Celery broker, dedup sets
-- **Jobs**: Celery worker + Beat for all scheduled tasks
-- **Video**: MinIO (S3-compatible) for session recordings
-- **Streaming**: Kafka for data ingestion
-- **Monitoring**: Prometheus scrapes `/api/monitoring/metrics`; Grafana visualises
+```bash
+./run_tests.sh --backend
+./run_tests.sh --frontend
+./run_tests.sh -k test_booking
+```
 
-## WebSocket Live Room
+`run_tests.sh` returns standard exit codes (`0` for success, non-zero for failure), making it CI/CD friendly.
 
-Connect via `WS /api/ws/sessions/{session_id}/room?token=<access_jwt>`
+## Seeded Credentials
 
-Receives real-time push events: `room_state`, `session_status_changed`, `attendee_joined`, `attendee_left`, `roster_update`.
+The default user is seeded in non-production mode (the compose setup uses development settings by default).
+
+| Role | Username | Password | Notes |
+| :--- | :--- | :--- | :--- |
+| **Admin** | `admin` | `Admin@Meridian1` | Created at container startup when `APP_ENV != production`. |
+
+No default learner/guest accounts are auto-seeded in this codebase.

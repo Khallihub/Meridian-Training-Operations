@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.schemas import (
     AttendanceRecordResponse, AttendanceStats, CheckInRequest, CheckOutRequest,
@@ -21,10 +21,23 @@ class AttendanceService:
         self._db = db
         self._session_repo = SessionRepository(db)
 
-    async def checkin(self, session_id: uuid.UUID, payload: CheckInRequest) -> AttendanceRecordResponse:
+    async def _assert_instructor_owns(self, session: object, actor_id: str) -> None:
+        """Raise ForbiddenError if the instructor is not assigned to this session."""
+        from sqlalchemy import select
+        from app.modules.instructors.models import Instructor
+        result = await self._db.execute(
+            select(Instructor).where(Instructor.user_id == uuid.UUID(actor_id))
+        )
+        instructor = result.scalar_one_or_none()
+        if not instructor or getattr(session, "instructor_id", None) != instructor.id:
+            raise ForbiddenError("Instructors may only manage attendance for their own sessions.")
+
+    async def checkin(self, session_id: uuid.UUID, payload: CheckInRequest, actor_id: str | None = None, actor_role: str = "admin") -> AttendanceRecordResponse:
         session = await self._session_repo.get(session_id)
         if not session:
             raise NotFoundError("Session")
+        if actor_role == "instructor" and actor_id:
+            await self._assert_instructor_owns(session, actor_id)
 
         # Require a confirmed booking
         from app.modules.bookings.models import Booking, BookingStatus
@@ -74,7 +87,11 @@ class AttendanceService:
 
         return AttendanceRecordResponse.model_validate(record)
 
-    async def checkout(self, session_id: uuid.UUID, payload: CheckOutRequest) -> AttendanceRecordResponse:
+    async def checkout(self, session_id: uuid.UUID, payload: CheckOutRequest, actor_id: str | None = None, actor_role: str = "admin") -> AttendanceRecordResponse:
+        if actor_role == "instructor" and actor_id:
+            session = await self._session_repo.get(session_id)
+            if session:
+                await self._assert_instructor_owns(session, actor_id)
         result = await self._db.execute(
             select(AttendanceRecord).where(
                 and_(AttendanceRecord.session_id == session_id, AttendanceRecord.learner_id == payload.learner_id)
@@ -98,10 +115,12 @@ class AttendanceService:
 
         return AttendanceRecordResponse.model_validate(record)
 
-    async def get_stats(self, session_id: uuid.UUID) -> AttendanceStats:
+    async def get_stats(self, session_id: uuid.UUID, actor_id: str | None = None, actor_role: str = "admin") -> AttendanceStats:
         session = await self._session_repo.get(session_id)
         if not session:
             raise NotFoundError("Session")
+        if actor_role == "instructor" and actor_id:
+            await self._assert_instructor_owns(session, actor_id)
 
         records_result = await self._db.execute(
             select(AttendanceRecord).where(AttendanceRecord.session_id == session_id)

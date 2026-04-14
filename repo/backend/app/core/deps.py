@@ -11,7 +11,7 @@ from app.core.database import get_db
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.security import decode_token, is_inactive, is_token_blocklisted, touch_last_seen
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
 async def get_current_user(
@@ -59,7 +59,13 @@ def require_roles(*roles: str):
 
 
 async def get_ws_user(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
-    """Authenticate WebSocket connections via ?token= query param."""
+    """Authenticate WebSocket connections via ?token= query param.
+
+    Inactivity is NOT checked here — the JWT expiry is the correct security
+    gate for long-lived WebSocket connections.  The Redis-based is_inactive
+    check is only meaningful for REST endpoints and fails spuriously after a
+    Redis restart (all keys gone even though sessions are still valid).
+    """
     from app.modules.users.repository import UserRepository
 
     token = websocket.query_params.get("token")
@@ -83,15 +89,12 @@ async def get_ws_user(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
 
     user_id: str = payload.get("sub")
 
-    if await is_inactive(user_id):
-        await websocket.close(code=4001)
-        raise UnauthorizedError("Session expired due to inactivity.")
-
     repo = UserRepository(db)
     user = await repo.get_by_id(user_id)
     if not user or not user.is_active:
         await websocket.close(code=4001)
         raise UnauthorizedError()
 
+    # Refresh the activity window now that we have a live connection
     await touch_last_seen(user_id)
     return user

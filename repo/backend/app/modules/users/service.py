@@ -10,7 +10,7 @@ from app.core.security import hash_password
 from app.modules.instructors.models import Instructor
 from app.modules.users.models import User, UserRole
 from app.modules.users.repository import UserRepository
-from app.modules.users.schemas import UserCreate, UserDetailResponse, UserResponse, UserUpdate
+from app.modules.users.schemas import UserCreate, UserDetailResponse, UserResponse, UserUnmaskResponse, UserUpdate
 
 
 def _build_response(user: User, admin: bool = False) -> UserResponse | UserDetailResponse:
@@ -28,7 +28,7 @@ def _build_response(user: User, admin: bool = False) -> UserResponse | UserDetai
         "created_at": user.created_at,
     }
     if admin:
-        return UserDetailResponse(**data, email_unmasked=email_raw, phone_unmasked=phone_raw)
+        return UserDetailResponse(**data)
     return UserResponse(**data)
 
 
@@ -102,3 +102,41 @@ class UserService:
             raise NotFoundError("User")
         await self._repo.soft_delete(user)
         await log_audit(self._repo._db, actor_id or user_id, "user", user_id, "delete")
+
+    async def unmask(self, user_id: str, actor_id: str, reason: str) -> UserUnmaskResponse:
+        """Return unmasked PII for a user.  Requires an explicit reason and always
+        writes an audit event — every call is recorded regardless of outcome,
+        including attempts against non-existent user IDs."""
+        user = await self._repo.get_by_id(user_id)
+
+        if not user:
+            # Audit the failed attempt before raising so that probing for valid
+            # user IDs is always visible in the audit trail.
+            await log_audit(
+                self._repo._db,
+                actor_id,
+                "user",
+                user_id,
+                "unmask_pii_not_found",
+                new_value={"reason": reason},
+            )
+            raise NotFoundError("User")
+
+        email_raw = decrypt_field(user.email_encrypted) if user.email_encrypted else None
+        phone_raw = decrypt_field(user.phone_encrypted) if user.phone_encrypted else None
+
+        await log_audit(
+            self._repo._db,
+            actor_id,
+            "user",
+            user_id,
+            "unmask_pii",
+            new_value={"reason": reason, "fields": ["email", "phone"]},
+        )
+        return UserUnmaskResponse(
+            id=user.id,
+            username=user.username,
+            email_unmasked=email_raw,
+            phone_unmasked=phone_raw,
+            reason=reason,
+        )

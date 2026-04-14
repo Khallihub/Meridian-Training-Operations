@@ -10,7 +10,7 @@ const loading = ref(false)
 onMounted(async () => {
   loading.value = true
   try {
-    const res = await client.get('/api/payments', { params: { page_size: 50 } })
+    const res = await client.get('/api/v1/payments', { params: { page_size: 50 } })
     payments.value = res.data.items
   } finally { loading.value = false }
 })

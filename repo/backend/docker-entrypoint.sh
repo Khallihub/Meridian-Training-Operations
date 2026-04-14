@@ -7,6 +7,13 @@ until pg_isready -h "${DB_HOST:-db}" -p "${DB_PORT:-5432}" -U "${DB_USER:-meridi
 done
 echo "==> PostgreSQL is ready."
 
+echo "==> Ensuring test database exists..."
+psql "postgresql://${DB_USER:-meridian}:${DB_PASSWORD:-meridian}@${DB_HOST:-db}:${DB_PORT:-5432}/postgres" \
+  -tc "SELECT 1 FROM pg_database WHERE datname='meridian_test'" \
+  | grep -q 1 \
+  || psql "postgresql://${DB_USER:-meridian}:${DB_PASSWORD:-meridian}@${DB_HOST:-db}:${DB_PORT:-5432}/postgres" \
+     -c "CREATE DATABASE meridian_test OWNER ${DB_USER:-meridian}"
+
 echo "==> Running Alembic migrations..."
 cd /app
 alembic -c alembic/alembic.ini upgrade head

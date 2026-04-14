@@ -24,9 +24,11 @@ async function toggleActive(p: Promotion) {
 }
 
 function fmt(v: number, type: string) {
-  if (type === 'pct_off') return `${v}% off`
+  if (type === 'percent_off') return `${v}% off`
   if (type === 'fixed_off') return `$${v} off`
-  return 'BOGO'
+  if (type === 'threshold_fixed_off') return `$${v} off (threshold)`
+  if (type === 'bogo_selected_workshops') return 'BOGO selected workshops'
+  return String(type)
 }
 </script>
 

@@ -12,6 +12,16 @@ from app.modules.jobs.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
+
+def _set_job_context(job_name: str) -> str:
+    """Set a job-scoped correlation ID in the logging context and return it."""
+    import uuid as _uuid
+    from app.core.logging import request_id_var
+    job_id = f"job:{job_name}:{_uuid.uuid4().hex[:8]}"
+    request_id_var.set(job_id)
+    return job_id
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -51,7 +61,7 @@ async def _record_execution(job_name: str, started_at: datetime, status: str, er
 
 @celery_app.task(
     name="app.modules.jobs.tasks.close_expired_orders",
-    bind=True, max_retries=3, default_retry_delay=30,
+    bind=True, max_retries=5, default_retry_delay=30,
 )
 def close_expired_orders(self):
     started = datetime.now(UTC)
@@ -71,15 +81,15 @@ async def _close_expired_orders_async():
         now = datetime.now(UTC)
         await db.execute(
             update(Order)
-            .where(and_(Order.status == OrderStatus.pending, Order.expires_at <= now))
-            .values(status=OrderStatus.cancelled, closed_at=now)
+            .where(and_(Order.status == OrderStatus.awaiting_payment, Order.expires_at <= now))
+            .values(status=OrderStatus.closed_unpaid, closed_at=now)
         )
     logger.info("Expired orders closed.")
 
 
 @celery_app.task(
     name="app.modules.jobs.tasks.attendance_rollup",
-    bind=True, max_retries=3, default_retry_delay=60,
+    bind=True, max_retries=5, default_retry_delay=60,
 )
 def attendance_rollup(self):
     started = datetime.now(UTC)
@@ -112,7 +122,7 @@ async def _attendance_rollup_async():
 
 @celery_app.task(
     name="app.modules.jobs.tasks.replay_access_expiry",
-    bind=True, max_retries=3, default_retry_delay=60,
+    bind=True, max_retries=5, default_retry_delay=60,
 )
 def replay_access_expiry(self):
     started = datetime.now(UTC)
@@ -140,7 +150,7 @@ async def _replay_access_expiry_async():
 
 @celery_app.task(
     name="app.modules.jobs.tasks.generate_reconciliation_export",
-    bind=True, max_retries=3, default_retry_delay=120,
+    bind=True, max_retries=5, default_retry_delay=120,
 )
 def generate_reconciliation_export(self):
     started = datetime.now(UTC)
@@ -267,8 +277,80 @@ async def _check_job_health_async():
 
 
 @celery_app.task(
+    name="app.modules.jobs.tasks.run_search_export",
+    bind=True, max_retries=3, default_retry_delay=30,
+)
+def run_search_export(self, job_id: str):
+    """Execute a queued search export job and persist the result file.
+
+    The job row is updated to ``processing`` when work begins, then to
+    ``completed`` (with ``file_path`` and ``row_count``) on success, or
+    ``failed`` (with ``error_detail``) on unrecoverable error.
+    """
+    _set_job_context("run_search_export")
+    started = datetime.now(UTC)
+    try:
+        _run_async(_run_search_export_async(job_id))
+        _run_async(_record_execution("run_search_export", started, "success"))
+    except Exception as exc:
+        _run_async(_record_execution("run_search_export", started, "failure", str(exc)))
+        raise self.retry(exc=exc, countdown=2 ** self.request.retries * 30)
+
+
+async def _run_search_export_async(job_id: str):
+    import os
+    from app.core.config import settings
+    from app.modules.search.models import SearchExportJob, SearchExportJobStatus
+    from app.modules.search.schemas import SearchFilters
+    from app.modules.search.service import SearchService
+    from sqlalchemy import select as _select
+
+    async with _get_db() as db:
+        # Fetch the job row and mark it as processing
+        result = await db.execute(_select(SearchExportJob).where(SearchExportJob.id == uuid.UUID(job_id)))
+        job = result.scalar_one_or_none()
+        if not job:
+            logger.error("run_search_export: job %s not found", job_id)
+            return
+
+        job.status = SearchExportJobStatus.processing
+        await db.flush()
+
+        try:
+            filters = SearchFilters(**job.filters_json)
+            svc = SearchService(db)
+            data: bytes = await svc.export(
+                filters=filters,
+                fmt=job.format,
+                caller_role=job.caller_role,
+                caller_id=job.caller_id,
+            )
+
+            os.makedirs(settings.EXPORTS_DIR, exist_ok=True)
+            ext = "xlsx" if job.format == "excel" else "csv"
+            file_path = os.path.join(settings.EXPORTS_DIR, f"search_export_{job_id}.{ext}")
+            with open(file_path, "wb") as fh:
+                fh.write(data)
+
+            # Count rows: subtract 1 for the header line (CSV), or count bytes for xlsx
+            row_count = max(0, data.count(b"\n") - 1) if job.format == "csv" else None
+
+            job.status = SearchExportJobStatus.completed
+            job.file_path = file_path
+            job.row_count = row_count
+            job.completed_at = datetime.now(UTC)
+            logger.info("run_search_export: job %s completed (%s rows)", job_id, row_count)
+        except Exception as exc:
+            job.status = SearchExportJobStatus.failed
+            job.error_detail = str(exc)
+            job.completed_at = datetime.now(UTC)
+            logger.error("run_search_export: job %s failed: %r", job_id, exc)
+            raise
+
+
+@celery_app.task(
     name="app.modules.jobs.tasks.run_ingestion_jobs",
-    bind=True, max_retries=3, default_retry_delay=60,
+    bind=True, max_retries=5, default_retry_delay=60,
 )
 def run_ingestion_jobs(self):
     started = datetime.now(UTC)

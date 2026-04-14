@@ -10,8 +10,12 @@ class PaymentCallbackPayload(BaseModel):
     order_id: uuid.UUID
     terminal_ref: str
     amount: float
-    timestamp: str       # ISO8601 string used in HMAC
-    signature: str       # HMAC-SHA256 hex
+    timestamp: str          # ISO8601 string used in HMAC
+    signature: str          # HMAC-SHA256 hex
+    # Durable idempotency key supplied by the gateway (UUID or opaque string).
+    # When present, dedup is performed against the payments table (durable).
+    # Absent for legacy/simulator callbacks; Redis TTL dedup applies as fallback.
+    external_event_id: str | None = None
 
 
 class PaymentResponse(BaseModel):

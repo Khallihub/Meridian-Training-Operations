@@ -63,9 +63,9 @@ async function handleSubmit() {
               <option value="kafka">Kafka</option>
               <option value="logstash">Logstash (HTTP push)</option>
               <option value="flume">Flume (HTTP push)</option>
-              <option value="batch_file">Batch File</option>
-              <option value="cdc_mysql">CDC MySQL</option>
-              <option value="cdc_pg">CDC PostgreSQL</option>
+              <option value="file">Batch File</option>
+              <option value="mysql_cdc">CDC MySQL</option>
+              <option value="postgres_cdc">CDC PostgreSQL</option>
             </select>
           </div>
           <div class="grid grid-cols-2 gap-4">

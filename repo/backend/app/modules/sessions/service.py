@@ -7,7 +7,7 @@ from dateutil.rrule import rrulestr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import log_audit
-from app.core.exceptions import ConflictError, NotFoundError, UnprocessableError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, UnprocessableError
 from app.modules.sessions.models import RecurrenceRule, Session, SessionStatus
 from app.modules.sessions.repository import SessionRepository
 from app.modules.sessions.schemas import (
@@ -29,6 +29,17 @@ class SessionService:
         self._repo = SessionRepository(db)
         self._db = db
 
+    async def _assert_instructor_owns(self, session: "Session", actor_id: str) -> None:
+        """Raise ForbiddenError if the actor (instructor role) is not the assigned instructor."""
+        from sqlalchemy import select
+        from app.modules.instructors.models import Instructor
+        result = await self._db.execute(
+            select(Instructor).where(Instructor.user_id == uuid.UUID(actor_id))
+        )
+        instructor = result.scalar_one_or_none()
+        if not instructor or session.instructor_id != instructor.id:
+            raise ForbiddenError("Instructors may only manage their own sessions.")
+
     async def _check_room_conflict(
         self,
         room_id: uuid.UUID,
@@ -37,12 +48,12 @@ class SessionService:
         buffer_minutes: int,
         exclude_id: uuid.UUID | None = None,
     ) -> None:
-        from sqlalchemy import and_, or_, select
+        from sqlalchemy import and_, select
         buffered_end = end + timedelta(minutes=buffer_minutes)
         q = (
             select(Session)
             .where(Session.room_id == room_id)
-            .where(Session.status != SessionStatus.cancelled)
+            .where(Session.status != SessionStatus.canceled)
             .where(and_(Session.start_time < buffered_end, Session.end_time > start))
         )
         if exclude_id:
@@ -54,9 +65,40 @@ class SessionService:
                 f"Room conflict: session already scheduled {conflict.start_time}–{conflict.end_time} (including buffer)."
             )
 
+    async def _check_instructor_conflict(
+        self,
+        instructor_id: uuid.UUID,
+        start: datetime,
+        end: datetime,
+        buffer_minutes: int,
+        exclude_id: uuid.UUID | None = None,
+    ) -> None:
+        """Raise ConflictError if the instructor is already assigned to an
+        overlapping session (symmetric to room conflict check)."""
+        from sqlalchemy import and_, select
+        buffered_end = end + timedelta(minutes=buffer_minutes)
+        q = (
+            select(Session)
+            .where(Session.instructor_id == instructor_id)
+            .where(Session.status != SessionStatus.canceled)
+            .where(and_(Session.start_time < buffered_end, Session.end_time > start))
+        )
+        if exclude_id:
+            q = q.where(Session.id != exclude_id)
+        result = await self._db.execute(q)
+        conflict = result.scalar_one_or_none()
+        if conflict:
+            raise ConflictError(
+                f"Instructor conflict: already assigned to a session "
+                f"{conflict.start_time}–{conflict.end_time} (including buffer)."
+            )
+
     async def create(self, payload: SessionCreate, created_by: uuid.UUID) -> SessionResponse:
         await self._check_room_conflict(
             payload.room_id, payload.start_time, payload.end_time, payload.buffer_minutes
+        )
+        await self._check_instructor_conflict(
+            payload.instructor_id, payload.start_time, payload.end_time, payload.buffer_minutes
         )
         session = Session(**payload.model_dump(), created_by=created_by)
         session = await self._repo.create(session)
@@ -82,7 +124,7 @@ class SessionService:
         except Exception as e:
             raise UnprocessableError(f"Invalid RRULE string: {e}")
 
-        until = payload.recurrence.end_date or (payload.recurrence.start_date + timedelta(days=365))
+        until = payload.recurrence.end_date or (payload.recurrence.start_date + timedelta(days=180))
         dates = list(rr.between(payload.recurrence.start_date, until, inc=True))
 
         sessions = []
@@ -96,6 +138,7 @@ class SessionService:
             end_dt = dt + timedelta(minutes=duration)
 
             await self._check_room_conflict(payload.room_id, dt, end_dt, payload.buffer_minutes)
+            await self._check_instructor_conflict(payload.instructor_id, dt, end_dt, payload.buffer_minutes)
             s = Session(
                 title=payload.title,
                 course_id=payload.course_id,
@@ -145,40 +188,50 @@ class SessionService:
         sessions = await self._repo.list_monthly(month_start, month_end, location_id, instructor_id)
         return [SessionResponse.model_validate(s) for s in sessions]
 
-    async def update(self, session_id: uuid.UUID, payload: SessionUpdate, actor_id: str) -> SessionResponse:
+    async def update(self, session_id: uuid.UUID, payload: SessionUpdate, actor_id: str, actor_role: str = "admin") -> SessionResponse:
         s = await self._repo.get(session_id)
         if not s:
             raise NotFoundError("Session")
+        if actor_role == "instructor":
+            await self._assert_instructor_owns(s, actor_id)
         old = {"status": s.status, "start_time": str(s.start_time)}
         updates = payload.model_dump(exclude_none=True)
-        if any(k in updates for k in ("room_id", "start_time", "end_time")):
+        if any(k in updates for k in ("room_id", "start_time", "end_time", "instructor_id")):
             room_id = updates.get("room_id", s.room_id)
+            instructor_id = updates.get("instructor_id", s.instructor_id)
             start = updates.get("start_time", s.start_time)
             end = updates.get("end_time", s.end_time)
             buffer = updates.get("buffer_minutes", s.buffer_minutes)
             await self._check_room_conflict(room_id, start, end, buffer, exclude_id=session_id)
+            await self._check_instructor_conflict(instructor_id, start, end, buffer, exclude_id=session_id)
         for k, v in updates.items():
             setattr(s, k, v)
         await self._repo.save(s)
         await log_audit(self._db, actor_id, "session", str(session_id), "update", old, payload.model_dump(exclude_none=True))
         return await self._fresh(session_id)
 
-    async def cancel(self, session_id: uuid.UUID, actor_id: str) -> SessionResponse:
+    async def cancel(self, session_id: uuid.UUID, actor_id: str, actor_role: str = "admin") -> SessionResponse:
         s = await self._repo.get(session_id)
         if not s:
             raise NotFoundError("Session")
-        if s.status == SessionStatus.completed:
-            raise ConflictError("Cannot cancel a completed session.")
-        s.status = SessionStatus.cancelled
+        if actor_role == "instructor":
+            await self._assert_instructor_owns(s, actor_id)
+        if s.status in (SessionStatus.ended, SessionStatus.archived):
+            raise ConflictError("Cannot cancel a session that has already ended or been archived.")
+        if s.status == SessionStatus.live:
+            raise ConflictError("Cannot cancel a live session directly; end it first.")
+        s.status = SessionStatus.canceled
         await self._repo.save(s)
         await log_audit(self._db, actor_id, "session", str(session_id), "cancel")
-        await room_manager.broadcast(str(session_id), {"type": "session_status_changed", "status": "cancelled"})
+        await room_manager.broadcast(str(session_id), {"type": "session_status_changed", "status": "canceled"})
         return await self._fresh(session_id)
 
-    async def go_live(self, session_id: uuid.UUID, actor_id: str) -> SessionResponse:
+    async def go_live(self, session_id: uuid.UUID, actor_id: str, actor_role: str = "admin") -> SessionResponse:
         s = await self._repo.get(session_id)
         if not s:
             raise NotFoundError("Session")
+        if actor_role == "instructor":
+            await self._assert_instructor_owns(s, actor_id)
         if s.status != SessionStatus.scheduled:
             raise ConflictError(f"Session is {s.status}, cannot go live.")
         s.status = SessionStatus.live
@@ -186,27 +239,37 @@ class SessionService:
         await room_manager.broadcast(str(session_id), {"type": "session_status_changed", "status": "live"})
         return await self._fresh(session_id)
 
-    async def complete(self, session_id: uuid.UUID, actor_id: str) -> SessionResponse:
+    async def end(self, session_id: uuid.UUID, actor_id: str, actor_role: str = "admin") -> SessionResponse:
+        """Transition live → ended. System then decides recording_processing or closed_no_recording."""
         s = await self._repo.get(session_id)
         if not s:
             raise NotFoundError("Session")
+        if actor_role == "instructor":
+            await self._assert_instructor_owns(s, actor_id)
         if s.status != SessionStatus.live:
-            raise ConflictError("Session must be live to complete.")
-        s.status = SessionStatus.completed
+            raise ConflictError("Session must be live to end.")
+        s.status = SessionStatus.ended
         await self._repo.save(s)
-        await room_manager.broadcast(str(session_id), {"type": "session_status_changed", "status": "completed"})
+        await log_audit(self._db, actor_id, "session", str(session_id), "end")
+        await room_manager.broadcast(str(session_id), {"type": "session_status_changed", "status": "ended"})
         return await self._fresh(session_id)
 
-    async def get_roster(self, session_id: uuid.UUID) -> list:
+    async def complete(self, session_id: uuid.UUID, actor_id: str, actor_role: str = "admin") -> SessionResponse:
+        """Alias for end() kept for backwards-compatibility with existing controller endpoint."""
+        return await self.end(session_id, actor_id, actor_role)
+
+    async def get_roster(self, session_id: uuid.UUID, actor_id: str | None = None, actor_role: str = "admin") -> list:
         s = await self._repo.get(session_id)
         if not s:
             raise NotFoundError("Session")
+        if actor_role == "instructor" and actor_id:
+            await self._assert_instructor_owns(s, actor_id)
         return await self._repo.get_enrolled_learners(session_id)
 
     async def delete(self, session_id: uuid.UUID, actor_id: str) -> None:
         s = await self._repo.get(session_id)
         if not s:
             raise NotFoundError("Session")
-        s.status = SessionStatus.cancelled
+        s.status = SessionStatus.canceled
         await self._repo.save(s)
         await log_audit(self._db, actor_id, "session", str(session_id), "delete")

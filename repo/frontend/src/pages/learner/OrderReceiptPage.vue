@@ -42,7 +42,7 @@ onMounted(async () => {
   const o = checkout.order
   if (!o) return
 
-  if (o.status === 'pending') {
+  if (o.status === 'awaiting_payment') {
     waitingForTerminal.value = true
     let attempts = 0
     pollInterval = setInterval(async () => {

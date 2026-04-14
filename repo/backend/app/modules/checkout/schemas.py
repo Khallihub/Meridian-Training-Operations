@@ -3,14 +3,14 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.modules.checkout.models import OrderStatus
 
 
 class CartItemInput(BaseModel):
     session_id: uuid.UUID
-    quantity: int = 1
+    quantity: int = Field(default=1, ge=1, le=100)
 
 
 class CartCreate(BaseModel):

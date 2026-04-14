@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.deps import get_current_user, require_roles
 from app.core.pagination import Page, PageMeta
-from app.modules.users.schemas import UserCreate, UserDetailResponse, UserResponse, UserUpdate
+from app.modules.users.schemas import UserCreate, UserDetailResponse, UserResponse, UserUnmaskResponse, UserUpdate
 from app.modules.users.service import UserService
 
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -72,3 +72,18 @@ async def delete_user(
     db: AsyncSession = Depends(get_db),
 ):
     await UserService(db).delete(str(user_id), actor_id=str(current_user.id))
+
+
+@router.post("/{user_id}/unmask", response_model=UserUnmaskResponse)
+async def unmask_user_pii(
+    user_id: uuid.UUID,
+    reason: str = Query(..., min_length=5, description="Business reason for accessing unmasked PII (min 5 chars)."),
+    current_user=Depends(require_roles("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return unmasked email and phone for a user.
+
+    Admin-only.  Every call is recorded in the audit log with the supplied
+    reason regardless of whether the target user exists.
+    """
+    return await UserService(db).unmask(str(user_id), actor_id=str(current_user.id), reason=reason)

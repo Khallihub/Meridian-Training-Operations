@@ -18,16 +18,50 @@ from app.modules.checkout.models import Order, OrderItem
 from app.modules.courses.models import Course
 from app.modules.instructors.models import Instructor
 from app.modules.locations.models import Location, Room
-from app.modules.search.models import SavedSearch
+from app.modules.search.models import SavedSearch, SearchExportJob, SearchExportJobStatus
 from app.modules.search.schemas import (
     ExportRequest, FacetCount, SavedSearchCreate, SavedSearchResponse,
-    SearchFacets, SearchFilters, SearchResponse, SearchResultItem,
+    SearchExportJobResponse, SearchFacets, SearchFilters, SearchResponse, SearchResultItem,
 )
 from app.modules.sessions.models import Session
 from app.modules.users.models import User
 
 
-def _build_count_query(filters: SearchFilters):
+def _apply_scope(q, caller_role: str | None, caller_id: uuid.UUID | None):
+    """Restrict query rows to what the caller is authorised to see.
+
+    Per PRD §6.11 role capability matrix and §6.13 "Auth scope filtering is
+    mandatory before result ranking":
+
+    - admin: full access (no additional predicate).
+    - instructor: only bookings for sessions they are assigned to teach.
+    - finance: only bookings that have an associated paid order.
+      Finance Analyst's domain is payment reconciliation, refund review, and
+      payment callback exception handling — not arbitrary enrollment browsing.
+    """
+    if caller_role == "instructor" and caller_id is not None:
+        # Instructor sees only bookings in sessions they teach.
+        q = q.where(Instructor.user_id == caller_id)
+    elif caller_role == "finance":
+        # Finance sees only bookings with a paid order attached.
+        # Uses the same correlated-subquery pattern as the invoice_number filter
+        # already in the codebase.
+        q = q.where(
+            select(Order.id)
+            .join(OrderItem, Order.id == OrderItem.order_id)
+            .where(OrderItem.session_id == Booking.session_id)
+            .where(Order.learner_id == Booking.learner_id)
+            .where(Order.status == "paid")
+            .exists()
+        )
+    return q
+
+
+def _build_count_query(
+    filters: SearchFilters,
+    caller_role: str | None = None,
+    caller_id: uuid.UUID | None = None,
+):
     """Simplified count query — same joins/filters as _build_base_query but no scalar subquery columns."""
     q = (
         select(func.count(Booking.id))
@@ -64,10 +98,15 @@ def _build_count_query(filters: SearchFilters):
             .where(text("CAST(orders.id AS text) ILIKE :inv").bindparams(inv=f"%{filters.invoice_number}%"))
             .exists()
         )
+    q = _apply_scope(q, caller_role, caller_id)
     return q
 
 
-def _build_base_query(filters: SearchFilters):
+def _build_base_query(
+    filters: SearchFilters,
+    caller_role: str | None = None,
+    caller_id: uuid.UUID | None = None,
+):
     """Build a SQLAlchemy select against bookings joined to all related tables."""
     q = (
         select(
@@ -141,6 +180,7 @@ def _build_base_query(filters: SearchFilters):
             .exists()
         )
 
+    q = _apply_scope(q, caller_role, caller_id)
     return q
 
 
@@ -148,9 +188,14 @@ class SearchService:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    async def search(self, filters: SearchFilters) -> SearchResponse:
+    async def search(
+        self,
+        filters: SearchFilters,
+        caller_role: str | None = None,
+        caller_id: uuid.UUID | None = None,
+    ) -> SearchResponse:
         t0 = time.monotonic()
-        q = _build_base_query(filters)
+        q = _build_base_query(filters, caller_role=caller_role, caller_id=caller_id)
         page_size = min(filters.page_size, settings.MAX_PAGE_SIZE)
 
         # Phone filter requires decrypt-then-match in Python.
@@ -191,7 +236,9 @@ class SearchService:
                 ))
         else:
             # No phone filter: use SQL count and SQL-level pagination for efficiency
-            count_result = await self._db.execute(_build_count_query(filters))
+            count_result = await self._db.execute(
+                _build_count_query(filters, caller_role=caller_role, caller_id=caller_id)
+            )
             total = count_result.scalar_one()
 
             offset = (filters.page - 1) * page_size
@@ -221,7 +268,7 @@ class SearchService:
         # Facets
         facets = None
         if filters.include_facets:
-            facets = await self._compute_facets(filters)
+            facets = await self._compute_facets(filters, caller_role=caller_role, caller_id=caller_id)
 
         return SearchResponse(
             results=items,
@@ -233,13 +280,22 @@ class SearchService:
             facets=facets,
         )
 
-    async def _compute_facets(self, filters: SearchFilters) -> SearchFacets:
-        base = _build_base_query(SearchFilters(
-            # Facets ignore pagination + enrollment_status to show all counts
-            site_id=filters.site_id,
-            instructor_id=filters.instructor_id,
-            date_range=filters.date_range,
-        ))
+    async def _compute_facets(
+        self,
+        filters: SearchFilters,
+        caller_role: str | None = None,
+        caller_id: uuid.UUID | None = None,
+    ) -> SearchFacets:
+        base = _build_base_query(
+            SearchFilters(
+                # Facets ignore pagination + enrollment_status to show all counts
+                site_id=filters.site_id,
+                instructor_id=filters.instructor_id,
+                date_range=filters.date_range,
+            ),
+            caller_role=caller_role,
+            caller_id=caller_id,
+        )
         base_sub = base.subquery()
 
         # Enrollment status facet
@@ -265,14 +321,22 @@ class SearchService:
 
         return SearchFacets(enrollment_status=status_facet, site=site_facet, instructor=instr_facet)
 
-    async def export(self, filters: SearchFilters, fmt: str) -> bytes:
+    async def export(
+        self,
+        filters: SearchFilters,
+        fmt: str,
+        caller_role: str | None = None,
+        caller_id: uuid.UUID | None = None,
+    ) -> bytes:
         if filters.page_size > settings.EXPORT_ROW_LIMIT:
             filters.page_size = settings.EXPORT_ROW_LIMIT
         filters.page = 1
 
         # Check total first
-        q = _build_base_query(filters)
-        count_result = await self._db.execute(_build_count_query(filters))
+        q = _build_base_query(filters, caller_role=caller_role, caller_id=caller_id)
+        count_result = await self._db.execute(
+            _build_count_query(filters, caller_role=caller_role, caller_id=caller_id)
+        )
         total = count_result.scalar_one()
         if total > settings.EXPORT_ROW_LIMIT:
             raise AppError(f"Export exceeds {settings.EXPORT_ROW_LIMIT} rows. Apply narrower filters.", 400)
@@ -331,3 +395,52 @@ class SearchService:
             raise NotFoundError("Saved search")
         await self._db.delete(ss)
         await self._db.flush()
+
+    # ------------------------------------------------------------------
+    # Async export jobs
+    # ------------------------------------------------------------------
+
+    async def create_export_job(
+        self,
+        filters: SearchFilters,
+        fmt: str,
+        caller_role: str | None,
+        caller_id: uuid.UUID | None,
+        created_by: uuid.UUID | None,
+    ) -> SearchExportJobResponse:
+        """Persist a queued export job and return its initial status.
+
+        The caller must enqueue the Celery task separately after flush so the
+        job ID is available.
+        """
+        job = SearchExportJob(
+            status=SearchExportJobStatus.queued,
+            format=fmt,
+            filters_json=filters.model_dump(mode="json"),
+            caller_role=caller_role,
+            caller_id=caller_id,
+            created_by=created_by,
+        )
+        self._db.add(job)
+        await self._db.flush()
+        await self._db.refresh(job)
+        return SearchExportJobResponse.model_validate(job)
+
+    async def get_export_job(
+        self,
+        job_id: uuid.UUID,
+        caller_id: uuid.UUID | None = None,
+        caller_role: str | None = None,
+    ) -> SearchExportJobResponse:
+        result = await self._db.execute(
+            select(SearchExportJob).where(SearchExportJob.id == job_id)
+        )
+        job = result.scalar_one_or_none()
+        if not job:
+            raise NotFoundError("Export job")
+        # Enforce object-level ownership: non-admins may only access their own jobs.
+        if caller_role != "admin" and caller_id is not None:
+            from app.core.exceptions import ForbiddenError
+            if job.created_by != caller_id:
+                raise ForbiddenError("Export job not found")
+        return SearchExportJobResponse.model_validate(job)

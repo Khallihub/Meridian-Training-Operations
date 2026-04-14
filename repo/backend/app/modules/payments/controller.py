@@ -33,7 +33,7 @@ async def payment_callback(body: PaymentCallbackPayload, db: AsyncSession = Depe
 
 
 @router.post("/payments/{order_id}/simulate", response_model=PaymentResponse)
-async def simulate_payment(order_id: uuid.UUID, _=Depends(require_roles("admin", "finance")), db: AsyncSession = Depends(get_db)):
+async def simulate_payment(order_id: uuid.UUID, _=Depends(require_roles("admin", "finance", "learner")), db: AsyncSession = Depends(get_db)):
     """Simulate a terminal payment callback — restricted to admin and finance roles."""
     return await PaymentService(db).simulate_payment(order_id)
 
@@ -53,7 +53,7 @@ async def list_refunds(
 
 
 @router.post("/refunds", response_model=RefundResponse, status_code=201)
-async def create_refund(body: RefundCreate, current_user=Depends(require_roles("admin", "finance")), db: AsyncSession = Depends(get_db)):
+async def create_refund(body: RefundCreate, current_user=Depends(require_roles("admin", "finance", "learner")), db: AsyncSession = Depends(get_db)):
     return await PaymentService(db).create_refund(body, current_user.id)
 
 
@@ -62,13 +62,33 @@ async def get_refund(refund_id: uuid.UUID, _=Depends(require_roles("admin", "fin
     return await PaymentService(db).get_refund(refund_id)
 
 
+@router.patch("/refunds/{refund_id}/review", response_model=RefundResponse)
+async def review_refund(refund_id: uuid.UUID, current_user=Depends(require_roles("admin", "finance")), db: AsyncSession = Depends(get_db)):
+    """Acknowledge a refund request and move it to pending_review (requested → pending_review)."""
+    return await PaymentService(db).review_refund(refund_id, str(current_user.id))
+
+
 @router.patch("/refunds/{refund_id}/approve", response_model=RefundResponse)
 async def approve_refund(refund_id: uuid.UUID, current_user=Depends(require_roles("admin", "finance")), db: AsyncSession = Depends(get_db)):
+    """Approve a refund under review (pending_review → approved)."""
     return await PaymentService(db).approve_refund(refund_id, str(current_user.id))
+
+
+@router.patch("/refunds/{refund_id}/reject", response_model=RefundResponse)
+async def reject_refund(refund_id: uuid.UUID, current_user=Depends(require_roles("admin", "finance")), db: AsyncSession = Depends(get_db)):
+    """Reject a refund under review (pending_review → rejected)."""
+    return await PaymentService(db).reject_refund(refund_id, str(current_user.id))
+
+
+@router.patch("/refunds/{refund_id}/process", response_model=RefundResponse)
+async def process_refund(refund_id: uuid.UUID, current_user=Depends(require_roles("admin", "finance")), db: AsyncSession = Depends(get_db)):
+    """Move approved refund to processing state (approved → processing)."""
+    return await PaymentService(db).process_refund(refund_id, str(current_user.id))
 
 
 @router.patch("/refunds/{refund_id}/complete", response_model=RefundResponse)
 async def complete_refund(refund_id: uuid.UUID, current_user=Depends(require_roles("admin", "finance")), db: AsyncSession = Depends(get_db)):
+    """Complete a refund in processing (processing → completed)."""
     return await PaymentService(db).complete_refund(refund_id, str(current_user.id))
 
 

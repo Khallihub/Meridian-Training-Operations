@@ -20,8 +20,13 @@ const route = useRoute()
 const alertCount = computed(() => jobs.alerts.length)
 
 onMounted(() => {
-  jobs.fetchAlerts()
-  setInterval(() => jobs.fetchAlerts(), 60000)
+  // Alerts are only meaningful for admin and dataops — they are the only roles
+  // with a monitoring page and the alert bell in the header. Polling for other
+  // roles makes unnecessary API calls and may hit authorization errors.
+  if (auth.role === 'admin' || auth.role === 'dataops') {
+    jobs.fetchAlerts()
+    setInterval(() => jobs.fetchAlerts(), 60000)
+  }
 })
 
 const navItems = computed(() => {

@@ -79,13 +79,13 @@ class IngestionService:
         if source.type == IngestionSourceType.kafka:
             from app.modules.ingestion.adapters.kafka_adapter import test_connectivity
             ok, lat, err = test_connectivity(config)
-        elif source.type == IngestionSourceType.cdc_mysql:
+        elif source.type == IngestionSourceType.mysql_cdc:
             from app.modules.ingestion.adapters.cdc_adapter import test_mysql_connectivity
             ok, lat, err = test_mysql_connectivity(config)
-        elif source.type == IngestionSourceType.cdc_pg:
+        elif source.type == IngestionSourceType.postgres_cdc:
             from app.modules.ingestion.adapters.cdc_adapter import test_pg_connectivity
             ok, lat, err = test_pg_connectivity(config)
-        elif source.type == IngestionSourceType.batch_file:
+        elif source.type == IngestionSourceType.file:
             from app.modules.ingestion.adapters.batch_adapter import test_connectivity
             ok, lat, err = test_connectivity(config)
         elif source.type in (IngestionSourceType.logstash, IngestionSourceType.flume):
@@ -126,7 +126,7 @@ class IngestionService:
                 from app.core.config import settings as _settings
                 r = redis_lib.from_url(_settings.REDIS_URL)
                 _, rows_ingested = consume_batch(config, source.concurrency_cap, source_id=str(source.id), redis_client=r)
-            elif source.type == IngestionSourceType.cdc_mysql:
+            elif source.type == IngestionSourceType.mysql_cdc:
                 from app.modules.ingestion.adapters.cdc_adapter import pull_mysql_cdc
                 from app.modules.ingestion.adapters.batch_adapter import filter_duplicates as _fd
                 import redis as redis_lib
@@ -134,7 +134,7 @@ class IngestionService:
                 r = redis_lib.from_url(_settings.REDIS_URL)
                 rows, _ = pull_mysql_cdc(config, source.concurrency_cap * 10)
                 rows_ingested = len(_fd(rows, str(source.id), r))
-            elif source.type == IngestionSourceType.cdc_pg:
+            elif source.type == IngestionSourceType.postgres_cdc:
                 from app.modules.ingestion.adapters.cdc_adapter import pull_pg_cdc
                 from app.modules.ingestion.adapters.batch_adapter import filter_duplicates as _fd
                 import redis as redis_lib
@@ -145,7 +145,7 @@ class IngestionService:
             elif source.type in (IngestionSourceType.logstash, IngestionSourceType.flume):
                 # logstash/flume deliver via HTTP webhook push; scheduled pull is a no-op
                 rows_ingested = 0
-            elif source.type == IngestionSourceType.batch_file:
+            elif source.type == IngestionSourceType.file:
                 from app.modules.ingestion.adapters.batch_adapter import parse_file, filter_duplicates
                 import redis as redis_lib
                 from app.core.config import settings as _settings
@@ -158,7 +158,7 @@ class IngestionService:
                 rows = parse_file(content, filename)
                 fresh = filter_duplicates(rows, str(source.id), r)
                 rows_ingested = len(fresh)
-            run.status = IngestionRunStatus.success
+            run.status = IngestionRunStatus.succeeded
         except Exception as e:
             run.status = IngestionRunStatus.failed
             run.error_detail = str(e)
@@ -201,11 +201,11 @@ class IngestionService:
             source_id=source.id,
             started_at=datetime.now(UTC),
             rows_ingested=len(fresh_payload),
-            status=IngestionRunStatus.success,
+            status=IngestionRunStatus.succeeded,
             finished_at=datetime.now(UTC),
         )
         self._db.add(run)
         source.last_run_at = run.finished_at
-        source.last_status = "success"
+        source.last_status = "succeeded"
         await self._db.flush()
         return IngestionRunResponse.model_validate(run)

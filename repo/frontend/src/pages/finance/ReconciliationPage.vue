@@ -49,7 +49,7 @@ async function generate() {
             <td class="px-4 py-3 text-right text-muted-foreground">{{ ex.row_count.toLocaleString() }}</td>
             <td class="px-4 py-3 text-muted-foreground text-xs">{{ ex.generated_at.slice(0, 16) }}</td>
             <td class="px-4 py-3 text-right">
-              <a :href="`/api/reconciliation/exports/${ex.id}/download`" download class="flex items-center justify-end gap-1 text-primary hover:underline text-xs">
+              <a :href="`/api/v1/reconciliation/exports/${ex.id}/download`" download class="flex items-center justify-end gap-1 text-primary hover:underline text-xs">
                 <Download class="h-3.5 w-3.5" /> CSV
               </a>
             </td>

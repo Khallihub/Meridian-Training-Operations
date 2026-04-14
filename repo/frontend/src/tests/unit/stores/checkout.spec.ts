@@ -16,7 +16,7 @@ import { checkoutApi } from '@/api/endpoints/checkout'
 const mockOrder = {
   id: 'order-1',
   learner_id: 'learner-1',
-  status: 'pending' as const,
+  status: 'awaiting_payment' as const,
   subtotal: 100,
   discount_total: 15,
   total: 85,
@@ -28,7 +28,7 @@ const mockOrder = {
   expires_at: '2026-04-08T00:30:00Z',
 }
 
-const mockCancelledOrder = { ...mockOrder, status: 'cancelled' as const }
+const mockCancelledOrder = { ...mockOrder, status: 'canceled' as const }
 
 describe('checkoutStore', () => {
   beforeEach(() => {
@@ -75,8 +75,8 @@ describe('checkoutStore', () => {
     const result = await store.cancelOrder('order-1')
 
     expect(checkoutApi.cancelOrder).toHaveBeenCalledWith('order-1')
-    expect(result!.status).toBe('cancelled')
-    expect(store.order!.status).toBe('cancelled')
+    expect(result!.status).toBe('canceled')
+    expect(store.order!.status).toBe('canceled')
   })
 
   it('clearCart resets order to null', async () => {

@@ -1,11 +1,14 @@
 from datetime import UTC, datetime
+import secrets
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Header, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_roles
+from app.core.exceptions import UnauthorizedError
 from app.modules.jobs.models import MonitoringAlert
 from app.modules.jobs.schemas import AlertResponse
 
@@ -19,7 +22,23 @@ async def health():
 
 @router.get("/metrics")
 async def metrics(_=Depends(require_roles("admin", "dataops"))):
-    """Prometheus metrics endpoint for scraping."""
+    """Prometheus metrics endpoint — JWT-authenticated for Swagger/manual access."""
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@router.get("/metrics/scrape")
+async def metrics_scrape(authorization: str | None = Header(default=None)):
+    """
+    Dedicated Prometheus scrape endpoint authenticated by a static bearer token.
+    Prometheus config: authorization: { credentials: "<PROMETHEUS_SCRAPE_TOKEN>" }
+    This sends: Authorization: Bearer <token>
+    """
+    token: str | None = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:]
+    if not token or not secrets.compare_digest(token, settings.PROMETHEUS_SCRAPE_TOKEN):
+        raise UnauthorizedError("Invalid or missing scrape token.")
     from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { format, addWeeks, subWeeks, startOfWeek, addDays, parseISO, getHours, getMinutes, differenceInMinutes } from 'date-fns'
+import { format, addWeeks, subWeeks, startOfWeek, addDays, parseISO, differenceInMinutes } from 'date-fns'
 import { formatInTimeZone } from 'date-fns-tz'
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import type { Session } from '@/stores/sessions'
@@ -35,18 +35,19 @@ function nextWeek() { currentDate.value = addWeeks(currentDate.value, 1) }
 const statusColors: Record<string, string> = {
   scheduled: 'bg-blue-200 border-blue-400 text-blue-900',
   live: 'bg-green-200 border-green-400 text-green-900',
-  completed: 'bg-gray-200 border-gray-400 text-gray-700',
-  cancelled: 'bg-red-100 border-red-300 text-red-700 line-through opacity-60',
+  ended: 'bg-gray-200 border-gray-400 text-gray-700',
+  canceled: 'bg-red-100 border-red-300 text-red-700 line-through opacity-60',
 }
 
-// Group sessions by weekday index (0=Mon..6=Sun)
+// Group sessions by weekday index (0=Mon..6=Sun) using target timezone for day assignment.
 const sessionsByDay = computed(() => {
   const groups: Record<number, Session[]> = {}
   for (let i = 0; i < 7; i++) groups[i] = []
   for (const s of props.sessions) {
-    const dayDate = parseISO(s.start_time)
+    const sessionDayInTz = formatInTimeZone(parseISO(s.start_time), tz.value, 'yyyy-MM-dd')
     for (let i = 0; i < 7; i++) {
-      if (format(dayDate, 'yyyy-MM-dd') === format(weekDays.value[i], 'yyyy-MM-dd')) {
+      const weekDayInTz = formatInTimeZone(weekDays.value[i], tz.value, 'yyyy-MM-dd')
+      if (sessionDayInTz === weekDayInTz) {
         groups[i].push(s)
         break
       }
@@ -56,8 +57,9 @@ const sessionsByDay = computed(() => {
 })
 
 function sessionTop(session: Session) {
-  const d = parseISO(session.start_time)
-  return (getHours(d) * 60 + getMinutes(d)) / 60 * 48 // 48px per hour
+  const timeInTz = formatInTimeZone(parseISO(session.start_time), tz.value, 'H:mm')
+  const [h, m] = timeInTz.split(':').map(Number)
+  return (h * 60 + m) / 60 * 48 // 48px per hour
 }
 
 function sessionHeight(session: Session) {

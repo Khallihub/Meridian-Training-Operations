@@ -6,19 +6,58 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
+from app.core.logging import CorrelationIdMiddleware, configure_logging
 
-logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL, logging.INFO))
+configure_logging(settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        import asyncio
+        os.makedirs(settings.EXPORTS_DIR, exist_ok=True)
+        os.makedirs(settings.UPLOADS_DIR, exist_ok=True)
+
+        from app.modules.sessions.websocket import redis_room_subscriber
+
+        async def _supervised_subscriber() -> None:
+            """Restart the Redis room subscriber if it crashes."""
+            while True:
+                try:
+                    await redis_room_subscriber()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Room subscriber exited unexpectedly; restarting in 2 s")
+                    await asyncio.sleep(2)
+
+        # Store reference on the app to prevent garbage collection.
+        # asyncio only keeps a weak reference to tasks — without a strong
+        # reference the subscriber can be GC'd, silently killing all Redis
+        # pub/sub delivery (peer_joined, webrtc_offer, webrtc_ice, …).
+        task = asyncio.create_task(_supervised_subscriber())
+        logger.info("Meridian backend started (subscriber task scheduled).")
+        yield
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     app = FastAPI(
         title="Meridian Training Operations API",
         version="1.0.0",
-        docs_url="/api/docs",
-        redoc_url="/api/redoc",
-        openapi_url="/api/openapi.json",
+        docs_url="/api/v1/docs",
+        redoc_url="/api/v1/redoc",
+        openapi_url="/api/v1/openapi.json",
+        lifespan=lifespan,
     )
+
+    # Correlation ID — must be added before CORS so every request gets an ID
+    app.add_middleware(CorrelationIdMiddleware)
 
     # CORS
     app.add_middleware(
@@ -34,17 +73,6 @@ def create_app() -> FastAPI:
 
     # Register all routers
     _register_routers(app)
-
-    # Startup / shutdown
-    @app.on_event("startup")
-    async def startup() -> None:
-        import asyncio
-        os.makedirs(settings.EXPORTS_DIR, exist_ok=True)
-        os.makedirs(settings.UPLOADS_DIR, exist_ok=True)
-        # Start the Redis pub/sub room subscriber for multi-worker WebSocket fanout
-        from app.modules.sessions.websocket import redis_room_subscriber
-        asyncio.create_task(redis_room_subscriber())
-        logger.info("Meridian backend started.")
 
     return app
 
@@ -70,7 +98,7 @@ def _register_routers(app: FastAPI) -> None:
     from app.modules.audit.controller import router as audit_router
     from app.modules.policy.controller import router as policy_router
 
-    prefix = "/api"
+    prefix = "/api/v1"
     app.include_router(auth_router, prefix=prefix)
     app.include_router(users_router, prefix=prefix)
     app.include_router(locations_router, prefix=prefix)
@@ -78,7 +106,7 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(courses_router, prefix=prefix)
     app.include_router(instructors_router, prefix=prefix)
     app.include_router(sessions_router, prefix=prefix)
-    app.include_router(ws_router)            # WebSocket — no /api prefix
+    app.include_router(ws_router)            # WebSocket — no /api/v1 prefix
     app.include_router(bookings_router, prefix=prefix)
     app.include_router(attendance_router, prefix=prefix)
     app.include_router(replays_router, prefix=prefix)

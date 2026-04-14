@@ -9,6 +9,7 @@ import pytest
 from app.core.exceptions import ConflictError, UnprocessableError
 from app.modules.bookings.models import Booking, BookingStatus
 from app.modules.bookings.schemas import CancelRequest, RescheduleRequest
+from app.modules.policy.schemas import AdminPolicyResponse
 from app.modules.sessions.models import Session, SessionStatus
 
 
@@ -19,6 +20,10 @@ def make_booking(status=BookingStatus.confirmed):
     b.learner_id = uuid.uuid4()
     b.status = status
     b.policy_fee_flagged = False
+    b.rescheduled_from_id = None
+    b.confirmed_at = None
+    b.cancelled_at = None
+    b.created_at = datetime.now(UTC)
     return b
 
 
@@ -30,6 +35,9 @@ def make_session(start_offset_hours: float = 3.0):
     s.capacity = 20
     s.status = SessionStatus.scheduled
     return s
+
+
+_DEFAULT_POLICY = AdminPolicyResponse(reschedule_cutoff_hours=2, cancellation_fee_hours=24)
 
 
 class TestBookingRescheduleBlocking:
@@ -46,8 +54,9 @@ class TestBookingRescheduleBlocking:
         svc._session_repo = AsyncMock()
         svc._session_repo.get = AsyncMock(return_value=session)
 
-        with pytest.raises(UnprocessableError, match="2 hours"):
-            await svc.reschedule(booking.id, RescheduleRequest(new_session_id=uuid.uuid4()), str(booking.learner_id), caller_role="learner")
+        with patch("app.modules.policy.service.get_policy", AsyncMock(return_value=_DEFAULT_POLICY)):
+            with pytest.raises(UnprocessableError, match="2 hours"):
+                await svc.reschedule(booking.id, RescheduleRequest(new_session_id=uuid.uuid4()), str(booking.learner_id), caller_role="learner")
 
     @pytest.mark.asyncio
     async def test_reschedule_allowed_outside_2_hours(self, db):
@@ -65,12 +74,13 @@ class TestBookingRescheduleBlocking:
         svc._session_repo.get = AsyncMock(side_effect=[session, new_session])
         svc._session_repo.save = AsyncMock()
 
-        with patch("app.modules.bookings.service.log_audit", AsyncMock()):
-            with patch("app.modules.bookings.service.room_manager") as rm:
-                rm.broadcast = AsyncMock()
-                result = await svc.reschedule(booking.id, RescheduleRequest(new_session_id=new_session.id), str(booking.learner_id), caller_role="learner")
+        with patch("app.modules.policy.service.get_policy", AsyncMock(return_value=_DEFAULT_POLICY)):
+            with patch("app.modules.bookings.service.log_audit", AsyncMock()):
+                with patch("app.modules.bookings.service.room_manager") as rm:
+                    rm.broadcast = AsyncMock()
+                    result = await svc.reschedule(booking.id, RescheduleRequest(new_session_id=new_session.id), str(booking.learner_id), caller_role="learner")
 
-        assert result.status == BookingStatus.rescheduled
+        assert result.status == BookingStatus.rescheduled_out
 
 
 class TestCancellationPolicyFee:
@@ -89,10 +99,11 @@ class TestCancellationPolicyFee:
         svc._session_repo.get = AsyncMock(return_value=session)
         svc._session_repo.save = AsyncMock()
 
-        with patch("app.modules.bookings.service.log_audit", AsyncMock()):
-            with patch("app.modules.bookings.service.room_manager") as rm:
-                rm.broadcast = AsyncMock()
-                result = await svc.cancel(booking.id, CancelRequest(), str(booking.learner_id), caller_role="learner")
+        with patch("app.modules.policy.service.get_policy", AsyncMock(return_value=_DEFAULT_POLICY)):
+            with patch("app.modules.bookings.service.log_audit", AsyncMock()):
+                with patch("app.modules.bookings.service.room_manager") as rm:
+                    rm.broadcast = AsyncMock()
+                    result = await svc.cancel(booking.id, CancelRequest(), str(booking.learner_id), caller_role="learner")
 
         assert result.policy_fee_flagged is True
 
@@ -111,9 +122,10 @@ class TestCancellationPolicyFee:
         svc._session_repo.get = AsyncMock(return_value=session)
         svc._session_repo.save = AsyncMock()
 
-        with patch("app.modules.bookings.service.log_audit", AsyncMock()):
-            with patch("app.modules.bookings.service.room_manager") as rm:
-                rm.broadcast = AsyncMock()
-                result = await svc.cancel(booking.id, CancelRequest(), str(booking.learner_id), caller_role="learner")
+        with patch("app.modules.policy.service.get_policy", AsyncMock(return_value=_DEFAULT_POLICY)):
+            with patch("app.modules.bookings.service.log_audit", AsyncMock()):
+                with patch("app.modules.bookings.service.room_manager") as rm:
+                    rm.broadcast = AsyncMock()
+                    result = await svc.cancel(booking.id, CancelRequest(), str(booking.learner_id), caller_role="learner")
 
         assert result.policy_fee_flagged is False

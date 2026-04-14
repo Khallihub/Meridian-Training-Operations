@@ -68,7 +68,7 @@ async def update_session(
     current_user=Depends(require_roles("admin", "instructor")),
     db: AsyncSession = Depends(get_db),
 ):
-    return await SessionService(db).update(session_id, body, str(current_user.id))
+    return await SessionService(db).update(session_id, body, str(current_user.id), current_user.role)
 
 
 @router.delete("/{session_id}", status_code=204)
@@ -86,7 +86,7 @@ async def cancel_session(
     current_user=Depends(require_roles("admin", "instructor")),
     db: AsyncSession = Depends(get_db),
 ):
-    return await SessionService(db).cancel(session_id, str(current_user.id))
+    return await SessionService(db).cancel(session_id, str(current_user.id), current_user.role)
 
 
 @router.post("/{session_id}/go-live", response_model=SessionResponse)
@@ -95,7 +95,16 @@ async def go_live(
     current_user=Depends(require_roles("admin", "instructor")),
     db: AsyncSession = Depends(get_db),
 ):
-    return await SessionService(db).go_live(session_id, str(current_user.id))
+    return await SessionService(db).go_live(session_id, str(current_user.id), current_user.role)
+
+
+@router.post("/{session_id}/end", response_model=SessionResponse)
+async def end_session(
+    session_id: uuid.UUID,
+    current_user=Depends(require_roles("admin", "instructor")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await SessionService(db).end(session_id, str(current_user.id), current_user.role)
 
 
 @router.post("/{session_id}/complete", response_model=SessionResponse)
@@ -104,7 +113,8 @@ async def complete_session(
     current_user=Depends(require_roles("admin", "instructor")),
     db: AsyncSession = Depends(get_db),
 ):
-    return await SessionService(db).complete(session_id, str(current_user.id))
+    """Alias for /end — kept for backwards compatibility."""
+    return await SessionService(db).end(session_id, str(current_user.id), current_user.role)
 
 
 @router.get("/{session_id}/roster")
@@ -113,5 +123,5 @@ async def get_roster(
     current_user=Depends(require_roles("admin", "instructor")),
     db: AsyncSession = Depends(get_db),
 ):
-    learners = await SessionService(db).get_roster(session_id)
+    learners = await SessionService(db).get_roster(session_id, str(current_user.id), current_user.role)
     return learners  # already a list of dicts from get_enrolled_learners()

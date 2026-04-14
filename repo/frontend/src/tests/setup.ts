@@ -15,15 +15,15 @@ Object.defineProperty(window, 'matchMedia', {
     addListener: vi.fn(), removeListener: vi.fn(),
     addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
   })),
-})
+});
 
 (globalThis as any).WebSocket = vi.fn().mockImplementation(() => ({
   send: vi.fn(), close: vi.fn(),
   onopen: null, onmessage: null, onerror: null, onclose: null,
   readyState: 1, CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3,
-})) as any
+})) as any;
 
 // Mock crypto.randomUUID
 Object.defineProperty(globalThis, 'crypto', {
   value: { randomUUID: () => '00000000-0000-0000-0000-000000000000' },
-})
+});

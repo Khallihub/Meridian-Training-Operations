@@ -29,8 +29,25 @@ class ReplayService:
 
     async def _check_access(self, session_id: uuid.UUID, user_id: uuid.UUID, user_role: str) -> None:
         """Raise ForbiddenError if user cannot access the replay."""
-        if user_role in ("admin", "instructor"):
+        if user_role == "admin":
             return
+
+        if user_role == "instructor":
+            # Instructors may only read replays for sessions they are assigned to.
+            from app.modules.instructors.models import Instructor
+            from app.modules.sessions.models import Session as _Session
+            instr_result = await self._db.execute(
+                select(Instructor).where(Instructor.user_id == user_id)
+            )
+            instructor = instr_result.scalar_one_or_none()
+            if instructor:
+                sess_result = await self._db.execute(
+                    select(_Session).where(_Session.id == session_id)
+                )
+                sess = sess_result.scalar_one_or_none()
+                if sess and sess.instructor_id == instructor.id:
+                    return
+            raise ForbiddenError("Instructors may only access replays for their own sessions.")
 
         result = await self._db.execute(
             select(ReplayAccessRule).where(
@@ -96,11 +113,24 @@ class ReplayService:
         recordings = result.scalars().all()
         return [RecordingResponse.model_validate(r) for r in recordings]
 
-    async def initiate_upload(self, session_id: uuid.UUID) -> dict:
+    async def _assert_instructor_owns_session(self, session: object, actor_id: str) -> None:
+        """Raise ForbiddenError if the instructor (by user_id) is not the session's assigned instructor."""
+        from sqlalchemy import select
+        from app.modules.instructors.models import Instructor
+        result = await self._db.execute(
+            select(Instructor).where(Instructor.user_id == uuid.UUID(actor_id))
+        )
+        instructor = result.scalar_one_or_none()
+        if not instructor or getattr(session, "instructor_id", None) != instructor.id:
+            raise ForbiddenError("Instructors may only upload recordings for their own sessions.")
+
+    async def initiate_upload(self, session_id: uuid.UUID, actor_id: str | None = None, actor_role: str = "admin") -> dict:
         """Returns a presigned PUT URL for direct upload to MinIO."""
         session = await self._session_repo.get(session_id)
         if not session:
             raise NotFoundError("Session")
+        if actor_role == "instructor" and actor_id:
+            await self._assert_instructor_owns_session(session, actor_id)
 
         object_key = f"sessions/{session_id}/recording.mp4"
         bucket = settings.MINIO_BUCKET_RECORDINGS
@@ -126,7 +156,11 @@ class ReplayService:
         presigned_url = get_presigned_upload_url(bucket, object_key)
         return {"presigned_url": presigned_url, "object_key": object_key, "bucket": bucket}
 
-    async def confirm_upload(self, session_id: uuid.UUID, file_size_bytes: int | None, duration_seconds: int | None) -> RecordingResponse:
+    async def confirm_upload(self, session_id: uuid.UUID, file_size_bytes: int | None, duration_seconds: int | None, actor_id: str | None = None, actor_role: str = "admin") -> RecordingResponse:
+        if actor_role == "instructor" and actor_id:
+            session = await self._session_repo.get(session_id)
+            if session:
+                await self._assert_instructor_owns_session(session, actor_id)
         result = await self._db.execute(
             select(SessionRecording).where(SessionRecording.session_id == session_id)
         )
@@ -142,7 +176,8 @@ class ReplayService:
         return RecordingResponse.model_validate(recording)
 
     async def store_recording_direct(
-        self, session_id: uuid.UUID, data: bytes, file_size_bytes: int, duration_seconds: int, content_type: str
+        self, session_id: uuid.UUID, data: bytes, file_size_bytes: int, duration_seconds: int, content_type: str,
+        actor_id: str | None = None, actor_role: str = "admin",
     ) -> RecordingResponse:
         """Upload recording bytes directly to MinIO (used when presigned URLs are unreachable from browser)."""
         from app.core.storage import upload_object
@@ -150,6 +185,8 @@ class ReplayService:
         session = await self._session_repo.get(session_id)
         if not session:
             raise NotFoundError("Session")
+        if actor_role == "instructor" and actor_id:
+            await self._assert_instructor_owns_session(session, actor_id)
 
         recording_id = uuid.uuid4()
         # Derive extension from content_type (webm or mp4)
@@ -203,7 +240,11 @@ class ReplayService:
         self._db.add(view)
         await self._db.flush()
 
-    async def get_stats(self, session_id: uuid.UUID) -> ReplayStats:
+    async def get_stats(self, session_id: uuid.UUID, actor_id: str | None = None, actor_role: str = "admin") -> ReplayStats:
+        if actor_role == "instructor" and actor_id:
+            session = await self._session_repo.get(session_id)
+            if session:
+                await self._assert_instructor_owns_session(session, actor_id)
         total_result = await self._db.execute(
             select(func.count()).where(ReplayView.session_id == session_id)
         )

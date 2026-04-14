@@ -6,4 +6,12 @@ scrape_configs:
   - job_name: "meridian-backend"
     static_configs:
       - targets: ["backend:8000"]
-    metrics_path: "/api/monitoring/metrics"
+    metrics_path: "/api/v1/monitoring/metrics/scrape"
+    params: {}
+    scheme: http
+    http_sd_configs: []
+    relabel_configs: []
+    metric_relabel_configs: []
+    # Static scrape token — must match PROMETHEUS_SCRAPE_TOKEN env var on the backend
+    authorization:
+      credentials: "change-me-prometheus-scrape-token"

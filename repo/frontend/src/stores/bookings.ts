@@ -9,7 +9,7 @@ export interface Booking {
   session_start_time: string
   learner_id: string
   learner_username: string
-  status: 'pending' | 'confirmed' | 'rescheduled' | 'cancelled' | 'no_show'
+  status: 'requested' | 'confirmed' | 'rescheduled_out' | 'canceled' | 'completed' | 'no_show'
   policy_fee_flagged: boolean
   cancellation_reason: string | null
   confirmed_at: string | null

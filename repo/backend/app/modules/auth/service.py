@@ -15,6 +15,7 @@ from app.core.security import (
     store_refresh_token,
     touch_last_seen,
     verify_and_consume_refresh_token,
+    verify_and_rehash_password,
     verify_password,
 )
 from app.modules.auth.schemas import TokenResponse
@@ -36,7 +37,8 @@ class AuthService:
         if user.locked_until and user.locked_until > datetime.now(UTC):
             raise AccountLockedError(user.locked_until)
 
-        if not verify_password(password, user.password_hash):
+        is_valid, new_hash = verify_and_rehash_password(password, user.password_hash)
+        if not is_valid:
             attempts = user.failed_login_attempts + 1
             lock_until = None
             if attempts >= settings.LOGIN_MAX_ATTEMPTS:
@@ -50,6 +52,12 @@ class AuthService:
 
         # Reset failure counter on success
         await self._repo.update_login_success(user.id)
+
+        # Transparent hash upgrade: if the stored hash was bcrypt (deprecated),
+        # passlib returned a new Argon2id hash.  Persist it so the next login
+        # uses the correct scheme without requiring a password reset.
+        if new_hash:
+            await self._repo.update_password(user.id, new_hash)
 
         access_token = create_access_token(str(user.id), user.role)
         refresh_token = create_refresh_token(str(user.id))
@@ -101,7 +109,10 @@ class AuthService:
         user = await self._repo.get_by_id(user_id)
         if not user:
             raise UnauthorizedError()
-        if not verify_password(current_password, user.password_hash):
+        # Use verify_and_rehash_password for consistency; the upgraded intermediate
+        # hash is discarded because we immediately replace it with new_password below.
+        is_valid, _ = verify_and_rehash_password(current_password, user.password_hash)
+        if not is_valid:
             raise UnauthorizedError("Current password is incorrect.")
         new_hash = hash_password(new_password)
         await self._repo.update_password(user.id, new_hash)

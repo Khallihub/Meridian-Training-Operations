@@ -10,10 +10,15 @@ from app.core.database import Base
 
 
 class SessionStatus(str, enum.Enum):
+    draft = "draft"
     scheduled = "scheduled"
     live = "live"
-    completed = "completed"
-    cancelled = "cancelled"
+    ended = "ended"
+    recording_processing = "recording_processing"
+    recording_published = "recording_published"
+    closed_no_recording = "closed_no_recording"
+    canceled = "canceled"
+    archived = "archived"
 
 
 class RecurrenceRule(Base):

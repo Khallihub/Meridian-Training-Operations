@@ -10,11 +10,13 @@ from app.core.database import Base
 
 
 class OrderStatus(str, enum.Enum):
-    pending = "pending"
+    awaiting_payment = "awaiting_payment"
     paid = "paid"
-    cancelled = "cancelled"
-    refunded = "refunded"
-    needs_review = "needs_review"  # paid but one or more bookings failed capacity check
+    closed_unpaid = "closed_unpaid"
+    canceled = "canceled"
+    refund_pending = "refund_pending"
+    refunded_partial = "refunded_partial"
+    refunded_full = "refunded_full"
 
 
 class Order(Base):
@@ -22,7 +24,7 @@ class Order(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     learner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
-    status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), nullable=False, default=OrderStatus.pending, index=True)
+    status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), nullable=False, default=OrderStatus.awaiting_payment, index=True)
     subtotal: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     discount_total: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     total: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)

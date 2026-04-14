@@ -8,6 +8,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import and_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import log_audit
@@ -48,7 +49,18 @@ class PaymentService:
         except ValueError:
             raise UnprocessableError("Invalid timestamp format in callback.")
 
-        # --- Idempotency: derive fingerprint and check Redis ---
+        # --- Durable idempotency: check external_event_id against the DB ---
+        # This is the primary dedup mechanism (survives Redis restarts/eviction).
+        if payload.external_event_id:
+            dup_result = await self._db.execute(
+                select(Payment).where(Payment.external_event_id == payload.external_event_id)
+            )
+            dup_payment = dup_result.scalar_one_or_none()
+            if dup_payment:
+                return PaymentResponse.model_validate(dup_payment)
+
+        # --- Redis TTL dedup: secondary optimistic guard for callbacks without
+        #     external_event_id (legacy / simulator) ---
         from app.core.security import get_redis
         cb_fp = hashlib.sha256(
             f"{payload.order_id}:{payload.terminal_ref}:{payload.timestamp}".encode()
@@ -58,8 +70,14 @@ class PaymentService:
 
         sig_ok = _verify_signature(payload)
 
+        # SELECT FOR UPDATE serialises concurrent callbacks for the same order.
+        # Any second callback that arrives while the first is still processing
+        # will block here until the first transaction commits, then read the
+        # terminal state set by the first and short-circuit below.
         result = await self._db.execute(
-            select(Payment).where(Payment.order_id == payload.order_id)
+            select(Payment)
+            .where(Payment.order_id == payload.order_id)
+            .with_for_update()
         )
         payment = result.scalar_one_or_none()
         if not payment:
@@ -69,7 +87,7 @@ class PaymentService:
         if payment.status in (PaymentStatus.completed, PaymentStatus.failed):
             return PaymentResponse.model_validate(payment)
 
-        # --- Short-circuit if this exact callback was already processed ---
+        # --- Short-circuit if this exact callback was already processed (Redis) ---
         if already_processed:
             return PaymentResponse.model_validate(payment)
 
@@ -77,6 +95,10 @@ class PaymentService:
         payment.callback_received_at = datetime.now(UTC)
         payment.signature_verified = sig_ok
         payment.raw_callback = payload.model_dump(mode="json")
+        # Persist the durable event key so future duplicate callbacks are rejected
+        # at the DB level regardless of Redis state.
+        if payload.external_event_id:
+            payment.external_event_id = payload.external_event_id
 
         if sig_ok:
             # Verify payload amount matches stored payment amount before accepting
@@ -123,8 +145,8 @@ class PaymentService:
                             },
                         )
                 if booking_failures:
-                    # Mark order for manual review so finance can issue partial refund
-                    order.status = OrderStatus.needs_review
+                    # Payment succeeded but some bookings failed — order needs refund, not closure
+                    order.status = OrderStatus.refund_pending
                     await log_audit(
                         self._db, "system", "order", str(order.id),
                         "booking_conflict_needs_review",
@@ -133,7 +155,21 @@ class PaymentService:
         else:
             payment.status = PaymentStatus.failed
 
-        await self._db.flush()
+        try:
+            await self._db.flush()
+        except IntegrityError:
+            # The unique constraint on external_event_id fired — a concurrent
+            # callback for the same event committed first.  Roll back the
+            # in-flight changes and return the already-persisted payment state.
+            await self._db.rollback()
+            result2 = await self._db.execute(
+                select(Payment).where(Payment.order_id == payload.order_id)
+            )
+            payment = result2.scalar_one_or_none()
+            if not payment:
+                raise NotFoundError("Payment")
+            return PaymentResponse.model_validate(payment)
+
         # Persist idempotency key so duplicate callbacks are short-circuited (1-hour TTL)
         await redis.setex(f"cb_processed:{cb_fp}", 3600, "1")
         return PaymentResponse.model_validate(payment)
@@ -201,6 +237,7 @@ class PaymentService:
             requested_by=requester_id,
             amount=payload.amount,
             reason=payload.reason,
+            status=RefundStatus.requested,
         )
         self._db.add(refund)
         await self._db.flush()
@@ -228,36 +265,89 @@ class PaymentService:
             raise NotFoundError("Refund")
         return RefundResponse.model_validate(r)
 
-    async def approve_refund(self, refund_id: uuid.UUID, actor_id: str) -> RefundResponse:
+    async def review_refund(self, refund_id: uuid.UUID, actor_id: str) -> RefundResponse:
+        """Move refund from requested → pending_review (finance acknowledges and begins review)."""
         result = await self._db.execute(select(Refund).where(Refund.id == refund_id))
         r = result.scalar_one_or_none()
         if not r:
             raise NotFoundError("Refund")
-        if r.status != RefundStatus.pending:
-            raise ConflictError(f"Refund is {r.status}.")
+        if r.status != RefundStatus.requested:
+            raise ConflictError(f"Refund must be in 'requested' state to begin review; current state: {r.status}.")
+        r.status = RefundStatus.pending_review
+        await self._db.flush()
+        await log_audit(self._db, actor_id, "refund", str(refund_id), "review")
+        return RefundResponse.model_validate(r)
+
+    async def approve_refund(self, refund_id: uuid.UUID, actor_id: str) -> RefundResponse:
+        """Move refund from pending_review → approved."""
+        result = await self._db.execute(select(Refund).where(Refund.id == refund_id))
+        r = result.scalar_one_or_none()
+        if not r:
+            raise NotFoundError("Refund")
+        if r.status != RefundStatus.pending_review:
+            raise ConflictError(f"Refund must be in 'pending_review' state to approve; current state: {r.status}.")
         r.status = RefundStatus.approved
         await self._db.flush()
         await log_audit(self._db, actor_id, "refund", str(refund_id), "approve")
         return RefundResponse.model_validate(r)
 
-    async def complete_refund(self, refund_id: uuid.UUID, actor_id: str) -> RefundResponse:
+    async def reject_refund(self, refund_id: uuid.UUID, actor_id: str) -> RefundResponse:
+        """Move refund from pending_review → rejected (terminal)."""
+        result = await self._db.execute(select(Refund).where(Refund.id == refund_id))
+        r = result.scalar_one_or_none()
+        if not r:
+            raise NotFoundError("Refund")
+        if r.status != RefundStatus.pending_review:
+            raise ConflictError(f"Refund must be in 'pending_review' state to reject; current state: {r.status}.")
+        r.status = RefundStatus.rejected
+        r.processed_at = datetime.now(UTC)
+        await self._db.flush()
+        await log_audit(self._db, actor_id, "refund", str(refund_id), "reject")
+        return RefundResponse.model_validate(r)
+
+    async def process_refund(self, refund_id: uuid.UUID, actor_id: str) -> RefundResponse:
+        """Move refund from approved → processing (payment is being issued)."""
         result = await self._db.execute(select(Refund).where(Refund.id == refund_id))
         r = result.scalar_one_or_none()
         if not r:
             raise NotFoundError("Refund")
         if r.status != RefundStatus.approved:
-            raise ConflictError(f"Refund must be approved before completing.")
+            raise ConflictError(f"Refund must be 'approved' before processing; current state: {r.status}.")
+        r.status = RefundStatus.processing
+        await self._db.flush()
+        await log_audit(self._db, actor_id, "refund", str(refund_id), "process")
+        return RefundResponse.model_validate(r)
+
+    async def complete_refund(self, refund_id: uuid.UUID, actor_id: str) -> RefundResponse:
+        """Move refund from processing → completed."""
+        result = await self._db.execute(select(Refund).where(Refund.id == refund_id))
+        r = result.scalar_one_or_none()
+        if not r:
+            raise NotFoundError("Refund")
+        if r.status != RefundStatus.processing:
+            raise ConflictError(f"Refund must be in 'processing' state to complete; current state: {r.status}.")
         r.status = RefundStatus.completed
         r.processed_at = datetime.now(UTC)
 
-        # Mark order as refunded
+        # Determine full vs partial refund and update order status accordingly
         payment_result = await self._db.execute(select(Payment).where(Payment.id == r.payment_id))
         payment = payment_result.scalar_one_or_none()
         if payment:
+            from sqlalchemy import func as _func
+            prior_completed = await self._db.execute(
+                select(_func.coalesce(_func.sum(Refund.amount), 0))
+                .where(Refund.payment_id == payment.id, Refund.status == RefundStatus.completed, Refund.id != r.id)
+            )
+            prior_amount = float(prior_completed.scalar_one() or 0)
+            total_refunded = prior_amount + float(r.amount)
+
             order_result = await self._db.execute(select(Order).where(Order.id == payment.order_id))
             order = order_result.scalar_one_or_none()
             if order:
-                order.status = OrderStatus.refunded
+                if total_refunded >= float(payment.amount):
+                    order.status = OrderStatus.refunded_full
+                else:
+                    order.status = OrderStatus.refunded_partial
 
         await self._db.flush()
         await log_audit(self._db, actor_id, "refund", str(refund_id), "complete")

@@ -14,7 +14,8 @@ x-backend-env: &backend-env
   MINIO_USE_SSL: "false"
   EXPORTS_DIR: /app/exports
   UPLOADS_DIR: /app/uploads
-  APP_ENV: production
+  APP_ENV: development
+  PROMETHEUS_SCRAPE_TOKEN: "change-me-prometheus-scrape-token"
   LOG_LEVEL: INFO
   DB_HOST: db
   DB_PORT: "5432"
@@ -138,7 +139,7 @@ services:
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/monitoring/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/monitoring/health"]
       interval: 10s
       timeout: 5s
       retries: 10

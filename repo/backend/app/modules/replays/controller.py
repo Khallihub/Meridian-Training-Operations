@@ -131,11 +131,11 @@ async def get_replay(
 @router.post("/sessions/{session_id}/replay/upload")
 async def initiate_upload(
     session_id: uuid.UUID,
-    _=Depends(require_roles("admin", "instructor")),
+    current_user=Depends(require_roles("admin", "instructor")),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a presigned PUT URL to upload a recording to MinIO."""
-    return await ReplayService(db).initiate_upload(session_id)
+    return await ReplayService(db).initiate_upload(session_id, str(current_user.id), current_user.role)
 
 
 @router.patch("/sessions/{session_id}/replay/recording", response_model=RecordingResponse)
@@ -143,10 +143,13 @@ async def confirm_upload(
     session_id: uuid.UUID,
     file_size_bytes: int | None = None,
     duration_seconds: int | None = None,
-    _=Depends(require_roles("admin", "instructor")),
+    current_user=Depends(require_roles("admin", "instructor")),
     db: AsyncSession = Depends(get_db),
 ):
-    return await ReplayService(db).confirm_upload(session_id, file_size_bytes, duration_seconds)
+    return await ReplayService(db).confirm_upload(
+        session_id, file_size_bytes, duration_seconds,
+        actor_id=str(current_user.id), actor_role=current_user.role,
+    )
 
 
 @router.post("/sessions/{session_id}/replay/recording/data", response_model=RecordingResponse)
@@ -154,14 +157,15 @@ async def upload_recording_direct(
     session_id: uuid.UUID,
     file: UploadFile = File(...),
     duration_seconds: int = Form(0),
-    _=Depends(require_roles("admin", "instructor")),
+    current_user=Depends(require_roles("admin", "instructor")),
     db: AsyncSession = Depends(get_db),
 ):
     """Direct upload endpoint — browser POSTs multipart to backend, backend writes to MinIO."""
     data = await file.read()
     content_type = file.content_type or "video/webm"
     return await ReplayService(db).store_recording_direct(
-        session_id, data, len(data), duration_seconds, content_type
+        session_id, data, len(data), duration_seconds, content_type,
+        actor_id=str(current_user.id), actor_role=current_user.role,
     )
 
 
@@ -188,7 +192,9 @@ async def record_view(
 @router.get("/replays/{session_id}/stats", response_model=ReplayStats)
 async def get_replay_stats(
     session_id: uuid.UUID,
-    _=Depends(require_roles("admin", "instructor")),
+    current_user=Depends(require_roles("admin", "instructor")),
     db: AsyncSession = Depends(get_db),
 ):
-    return await ReplayService(db).get_stats(session_id)
+    return await ReplayService(db).get_stats(
+        session_id, actor_id=str(current_user.id), actor_role=current_user.role
+    )

@@ -30,7 +30,7 @@ describe('bookingsStore', () => {
       session_start_time: new Date(Date.now() + 3600 * 1000).toISOString(), // 1h from now
       learner_id: 'l1',
       learner_username: 'alice',
-      status: 'cancelled',
+      status: 'canceled',
       policy_fee_flagged: true,  // within 24h
       cancellation_reason: 'changed plans',
       confirmed_at: null,

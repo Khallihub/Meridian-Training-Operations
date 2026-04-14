@@ -25,7 +25,7 @@ class BookingRepository:
         result = await self._db.execute(
             select(Booking).where(
                 and_(Booking.learner_id == learner_id, Booking.session_id == session_id,
-                     Booking.status.not_in([BookingStatus.cancelled]))
+                     Booking.status.not_in([BookingStatus.canceled, BookingStatus.rescheduled_out]))
             )
         )
         return result.scalar_one_or_none()
@@ -41,7 +41,9 @@ class BookingRepository:
 
     async def list(
         self, learner_id: uuid.UUID | None, session_id: uuid.UUID | None,
-        status: BookingStatus | None, page: int, page_size: int
+        status: BookingStatus | None, page: int, page_size: int,
+        instructor_id: uuid.UUID | None = None,
+        finance_payment_scoped: bool = False,
     ) -> tuple[list[Booking], int]:
         from sqlalchemy import func
         q = select(Booking)
@@ -51,6 +53,25 @@ class BookingRepository:
             q = q.where(Booking.session_id == session_id)
         if status:
             q = q.where(Booking.status == status)
+        if instructor_id:
+            from app.modules.sessions.models import Session as _Session
+            q = q.join(_Session, Booking.session_id == _Session.id).where(
+                _Session.instructor_id == instructor_id
+            )
+        if finance_payment_scoped:
+            # Row-level gate: only include bookings where an Order exists for the
+            # same (session_id, learner_id) pair, i.e. there is a real payment context.
+            from sqlalchemy import exists, and_
+            from app.modules.checkout.models import Order as _Order, OrderItem as _OI
+            q = q.where(
+                exists().where(
+                    and_(
+                        _OI.session_id == Booking.session_id,
+                        _OI.order_id == _Order.id,
+                        _Order.learner_id == Booking.learner_id,
+                    )
+                )
+            )
 
         count_result = await self._db.execute(select(func.count()).select_from(q.subquery()))
         total = count_result.scalar_one()

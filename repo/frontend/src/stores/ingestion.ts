@@ -5,12 +5,13 @@ import { ingestionApi } from '@/api/endpoints/ingestion'
 export interface IngestionSource {
   id: string
   name: string
-  type: 'kafka' | 'logstash' | 'batch_file' | 'cdc_mysql' | 'cdc_pg'
+  type: 'kafka' | 'flume' | 'logstash' | 'file' | 'mysql_cdc' | 'postgres_cdc'
   collection_frequency_seconds: number
   concurrency_cap: number
   is_active: boolean
   last_run_at: string | null
-  last_status: 'success' | 'failure' | 'running' | null
+  last_status: 'succeeded' | 'failed' | 'running' | null
+  config?: Record<string, unknown>
 }
 
 export interface IngestionRun {
@@ -19,7 +20,7 @@ export interface IngestionRun {
   started_at: string
   finished_at: string | null
   rows_ingested: number
-  status: 'running' | 'success' | 'failure'
+  status: 'queued' | 'running' | 'succeeded' | 'partial_failed' | 'failed' | 'canceled' | 'resolved'
   error_detail: string | null
 }
 

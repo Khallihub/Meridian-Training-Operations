@@ -16,7 +16,10 @@ from app.modules.checkout.schemas import (
 from app.modules.courses.models import Course
 from app.modules.payments.models import Payment, PaymentStatus
 from app.modules.promotions.models import Promotion
-from app.modules.sessions.models import Session
+from app.modules.sessions.models import Session, SessionStatus
+
+# States in which a session may be purchased/booked
+_BOOKABLE_STATUSES = {SessionStatus.scheduled}
 
 
 class CheckoutService:
@@ -32,6 +35,8 @@ class CheckoutService:
         if not row:
             raise NotFoundError("Session")
         session, course = row
+        if session.status not in _BOOKABLE_STATUSES:
+            raise ConflictError(f"Session is not available for purchase (status: {session.status}).")
         return float(course.price), str(course.id)
 
     async def create_cart(self, payload: CartCreate, learner_id: uuid.UUID) -> OrderResponse:
@@ -48,7 +53,11 @@ class CheckoutService:
         course_ids = {i["course_id"] for i in items_data}
         # Expand to individual unit prices for BOGO quantity-aware calculation
         item_prices = [i["unit_price"] for i in items_data for _ in range(i["quantity"])]
-        promos_result = await self._db.execute(select(Promotion).where(Promotion.is_active == True))
+        promos_result = await self._db.execute(
+            select(Promotion)
+            .where(Promotion.is_active == True)
+            .order_by(Promotion.priority.asc(), Promotion.id.asc())
+        )
         all_promos = promos_result.scalars().all()
         applied = compute_best_offer(list(all_promos), subtotal, course_ids, item_prices)
 
@@ -58,7 +67,7 @@ class CheckoutService:
 
         order = Order(
             learner_id=learner_id,
-            status=OrderStatus.pending,
+            status=OrderStatus.awaiting_payment,
             subtotal=round(subtotal, 2),
             discount_total=round(discount_total, 2),
             total=round(total, 2),
@@ -101,7 +110,11 @@ class CheckoutService:
             course_ids.add(course_id)
             item_prices_preview.extend([price] * item.quantity)
 
-        promos_result = await self._db.execute(select(Promotion).where(Promotion.is_active == True))
+        promos_result = await self._db.execute(
+            select(Promotion)
+            .where(Promotion.is_active == True)
+            .order_by(Promotion.priority.asc(), Promotion.id.asc())
+        )
         all_promos = promos_result.scalars().all()
         applied = compute_best_offer(list(all_promos), subtotal, course_ids, item_prices_preview)
         discount_total = sum(a.discount_amount for a in applied)
@@ -186,7 +199,7 @@ class CheckoutService:
             raise ForbiddenError("Not your order")
         if order.status == OrderStatus.paid:
             raise ConflictError("Cannot cancel a paid order; submit a refund instead.")
-        order.status = OrderStatus.cancelled
+        order.status = OrderStatus.canceled
         order.closed_at = datetime.now(UTC)
         await self._db.flush()
         return await self.get_order(order_id)
