@@ -1,5 +1,3 @@
-# ASSUMPTIONS.md
-
 This file captures implementation assumptions derived from docs/prompt.md in a
 Question / My Understanding / Solution format.
 

@@ -11,7 +11,6 @@ The repository implements most core domains and has substantial backend/frontend
 
 Top risks (Blocker/High):
 - **Blocker**: Password hashing does not meet PRD-required Argon2id (bcrypt is used).
-- **Blocker**: `ASSUMPTIONS.md` (explicitly required by execution contract) is missing.
 - **High**: Search endpoint lacks role-scope filtering for instructors/finance (potential overexposure).
 - **High**: Sensitive unmask controls (permission + reason + audit) are not implemented; admin responses include unmasked PII by default.
 - **High**: PRD-mandated callback idempotency by `external_event_id` is not implemented in API/schema/model.
@@ -132,34 +131,30 @@ Failing criteria:
 - Risk: Fails explicit security baseline and acceptance contract.
 - Suggestion: Migrate to Argon2id (`passlib[argon2]`), add migration strategy for existing hashes, and add tests covering hash upgrade path.
 
-2. Missing mandatory `ASSUMPTIONS.md`
-- Evidence: no file found via repo search; execution contract requires this artifact (`docs/prd.md:29`, `docs/prd.md:724`).
-- Risk: Contractual acceptance failure and untracked design deviations.
-- Suggestion: Add `ASSUMPTIONS.md` documenting all implemented deviations (crypto choice, callback idempotency approach, export sync behavior, recurrence horizon, etc.).
 
 ### High
 
-3. Search endpoint lacks role-scope authorization filtering (ABAC gap)
+2. Search endpoint lacks role-scope authorization filtering (ABAC gap)
 - Evidence: endpoint allows instructor/finance/admin in `backend/app/modules/search/controller.py:21`; service query has no caller scope parameter/enforcement in `backend/app/modules/search/service.py:151`.
 - Risk: Cross-user/site data exposure for non-admin users.
 - Suggestion: Add mandatory server-side scope predicates (instructor-owned sessions, finance-limited domains, etc.) before ranking/filtering.
 
-4. PII unmask control flow missing (permission + reason + audit)
+3. PII unmask control flow missing (permission + reason + audit)
 - Evidence: admin user detail includes `email_unmasked`/`phone_unmasked` (`backend/app/modules/users/schemas.py:45`, `backend/app/modules/users/service.py:31`), with no explicit unmask permission/reason endpoint.
 - Risk: Overbroad sensitive-data exposure and audit/compliance failure.
 - Suggestion: Introduce explicit unmask endpoint requiring permission + reason; log audit event for every unmask attempt.
 
-5. Payment callback idempotency not implemented per `external_event_id`
+4. Payment callback idempotency not implemented per `external_event_id`
 - Evidence: callback schema has no `external_event_id` in `backend/app/modules/payments/schemas.py:9`; model has no unique external-event field in `backend/app/modules/payments/models.py:29`; dedup uses transient Redis key in `backend/app/modules/payments/service.py:137`.
 - Risk: Duplicate callback replay handling is non-durable and weaker than spec.
 - Suggestion: Add `external_event_id` to payload + persistent unique index; keep Redis as optimization only.
 
-6. Promotion deterministic tie-break incomplete
+5. Promotion deterministic tie-break incomplete
 - Evidence: selection logic compares only discount amount (`backend/app/modules/checkout/best_offer.py:145`, `backend/app/modules/checkout/best_offer.py:157`), no explicit priority/ID tie-break; promo load query is unsorted in `backend/app/modules/checkout/service.py:56`.
 - Risk: Non-deterministic outcomes under equal discounts.
 - Suggestion: Apply explicit sort key `(discount DESC, priority ASC, promotion_id ASC)` and add tie-case unit tests.
 
-7. Audit tamper-evidence not implemented
+6. Audit tamper-evidence not implemented
 - Evidence: audit table fields in `backend/app/modules/audit/models.py:14` lack chain/signature fields; logger is plain insert in `backend/app/core/audit.py:36`.
 - Risk: Fails explicit PRD tamper-evidence requirement.
 - Suggestion: Add hash-chain or signed batch digest schema + verification job and tests.

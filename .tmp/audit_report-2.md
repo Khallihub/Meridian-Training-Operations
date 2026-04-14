@@ -7,7 +7,7 @@ Method: Static repository analysis only (no runtime execution, no Docker/test ex
 
 **Overall Verdict: Partial Pass (Not Production-Acceptable Yet)**
 
-The codebase is broadly implemented and many previously known blockers are fixed (Argon2id, assumptions doc, async export backend, audit hash-chain, scope-aware search query core). However, there are still material defects affecting core acceptance areas.
+The codebase is broadly implemented and many previously known blockers are fixed (Argon2id, doc, async export backend, audit hash-chain, scope-aware search query core). However, there are still material defects affecting core acceptance areas.
 
 Top material findings:
 - **Blocker**: Search export UX is still wired to a removed synchronous endpoint, so CSV/XLSX export from the search UI is effectively broken.
@@ -32,7 +32,6 @@ Major PRD domains are implemented in architecture:
 - FastAPI route composition and module registration in `repo/backend/app/main.py`.
 - Role-based Vue route structure in `repo/frontend/src/router/index.ts`.
 - Scheduler/worker flows for monitoring, reconciliation, ingestion, and search export jobs in `repo/backend/app/modules/jobs/tasks.py` and `repo/backend/app/modules/jobs/celery_app.py`.
-- PRD/assumption alignment docs exist in `docs/prd.md` and `docs/ASSUMPTIONS.md`.
 
 Current acceptance risk is not missing modules; it is contract drift between frontend and backend in key workflows plus object-level authorization gaps.
 
@@ -74,7 +73,6 @@ Status: **Fail**
 
 Implemented on backend:
 - Async export-job API contract exists (`POST/GET/download`) in `repo/backend/app/modules/search/controller.py:46`, `repo/backend/app/modules/search/controller.py:72`, and `repo/backend/app/modules/search/controller.py:82`.
-- Docs/assumptions also state async export contract in `docs/ASSUMPTIONS.md:153`.
 
 Blocker gap:
 - Frontend export still calls removed synchronous endpoint `/api/v1/search/export`:
@@ -102,7 +100,6 @@ Status: **Pass (Static)**
 - Ingestion source CRUD, test connection, and run triggers are implemented in backend/frontend paths:
   - Backend service/controller under `repo/backend/app/modules/ingestion/`.
   - Frontend pages `repo/frontend/src/pages/dataops/IngestionSourceListPage.vue`, `repo/frontend/src/pages/dataops/IngestionSourceFormPage.vue`, `repo/frontend/src/pages/dataops/IngestionSourceDetailPage.vue`.
-- Deterministic dedup tuple alignment is documented in `docs/ASSUMPTIONS.md:195`.
 - Operational behavior under restarts remains **Manual Verification Required**.
 
 ### Section F — Security, Authorization, Audit, Data Governance

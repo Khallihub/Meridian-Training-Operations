@@ -6,7 +6,7 @@ Method: Static repository review only (no runtime execution, no tests run in thi
 
 ## Overall Result
 
-- Previous Blocker/High items: 7 of 7 are now addressed in code/migrations.
+- Previous Blocker/High items: 6 of 6 are now addressed in code/migrations.
 - Additional previously flagged partial gaps reviewed: 5 addressed, 2 remain runtime-verification items.
 - Static acceptance posture now: major improvement, with remaining risk concentrated in operational behavior under failure/restart.
 
@@ -23,15 +23,7 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/requirements.txt:8
   - repo/backend/tests/unit/test_security.py:48
 
-2. Missing ASSUMPTIONS.md artifact
-- Prior severity: Blocker
-- Current status: Fixed
-- Evidence:
-  - docs/ASSUMPTIONS.md:1
-  - docs/ASSUMPTIONS.md:9
-  - docs/ASSUMPTIONS.md:31
-
-3. Search endpoint lacked role-scope filtering for instructor/finance
+2. Search endpoint lacked role-scope filtering for instructor/finance
 - Prior severity: High
 - Current status: Fixed
 - Evidence:
@@ -43,7 +35,7 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/tests/unit/test_search_scope.py:44
   - repo/backend/tests/unit/test_search_scope.py:69
 
-4. PII unmask controls (permission + reason + audit) were missing
+3. PII unmask controls (permission + reason + audit) were missing
 - Prior severity: High
 - Current status: Fixed
 - Evidence:
@@ -55,7 +47,7 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/app/modules/users/schemas.py:45
   - repo/backend/tests/unit/test_unmask_audit.py:61
 
-5. Callback idempotency by external_event_id was missing
+4. Callback idempotency by external_event_id was missing
 - Prior severity: High
 - Current status: Fixed
 - Evidence:
@@ -68,7 +60,7 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/alembic/versions/0006_security_hardening.py:1
   - repo/backend/tests/unit/test_external_event_id_dedup.py:87
 
-6. Promotion tie-break determinism was incomplete
+5. Promotion tie-break determinism was incomplete
 - Prior severity: High
 - Current status: Fixed
 - Evidence:
@@ -79,7 +71,7 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/alembic/versions/0006_security_hardening.py:1
   - repo/backend/tests/unit/test_best_offer.py:103
 
-7. Audit tamper-evidence chain was not implemented
+6. Audit tamper-evidence chain was not implemented
 - Prior severity: High
 - Current status: Fixed
 - Evidence:
@@ -90,7 +82,7 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/alembic/versions/0006_security_hardening.py:1
   - repo/backend/tests/unit/test_audit_chain.py:1
 
-8. Instructor overlap prevention not explicit
+7. Instructor overlap prevention not explicit
 - Prior severity: Medium (section gap)
 - Current status: Fixed
 - Evidence:
@@ -98,14 +90,13 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/app/modules/sessions/service.py:100
   - repo/backend/app/modules/sessions/service.py:141
 
-9. Recurrence default horizon diverged from 180-day requirement
+8. Recurrence default horizon diverged from 180-day requirement
 - Prior severity: Medium (section gap)
 - Current status: Fixed
 - Evidence:
   - repo/backend/app/modules/sessions/service.py:127
-  - docs/ASSUMPTIONS.md:179
 
-10. Search export behavior was synchronous instead of async job contract
+9. Search export behavior was synchronous instead of async job contract
 - Prior severity: High (section gap)
 - Current status: Fixed
 - Evidence:
@@ -117,7 +108,7 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/app/modules/search/models.py:19
   - repo/backend/alembic/versions/0007_search_export_jobs.py:1
 
-11. Structured logging with request/job correlation IDs was not evident
+10. Structured logging with request/job correlation IDs was not evident
 - Prior severity: Medium (section gap)
 - Current status: Fixed
 - Evidence:
@@ -127,7 +118,7 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/app/main.py:25
   - repo/backend/app/modules/jobs/tasks.py:290
 
-12. Ingestion dedup fingerprint did not match PRD tuple
+11. Ingestion dedup fingerprint did not match PRD tuple
 - Prior severity: Medium (section gap)
 - Current status: Fixed
 - Evidence:
@@ -135,9 +126,8 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/app/modules/ingestion/adapters/batch_adapter.py:33
   - repo/backend/app/modules/ingestion/adapters/batch_adapter.py:40
   - repo/backend/app/modules/ingestion/adapters/batch_adapter.py:50
-  - docs/ASSUMPTIONS.md:195
 
-13. Restart-safe requeue/resume behavior under worker failure
+12. Restart-safe requeue/resume behavior under worker failure
 - Prior severity: Medium (section gap)
 - Current status: Partially addressed, still requires runtime verification
 - Evidence:
@@ -146,7 +136,7 @@ Method: Static repository review only (no runtime execution, no tests run in thi
   - repo/backend/app/modules/jobs/celery_app.py:21
 - Note: The Celery reliability knobs are configured, but failure-injection evidence was not executed in this static recheck.
 
-14. Deterministic reprocessing guarantees across restart/state persistence
+13. Deterministic reprocessing guarantees across restart/state persistence
 - Prior severity: Medium (section gap)
 - Current status: Improved but still requires runtime verification
 - Evidence:

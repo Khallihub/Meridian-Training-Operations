@@ -41,7 +41,7 @@ export function useExport() {
       // Step 2: poll until completed or failed
       const deadline = Date.now() + POLL_TIMEOUT_MS
       let status = job.status as string
-      while (status === 'queued' || status === 'running') {
+      while (status === 'queued' || status === 'processing') {
         if (Date.now() > deadline) throw new Error('Export timed out. Please try again.')
         await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS))
         const pollRes = await fetch(`/api/v1/search/export/jobs/${jobId}`, {
