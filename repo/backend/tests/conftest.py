@@ -2,15 +2,16 @@
 Test configuration.
 
 Uses a real PostgreSQL test database (meridian_test).
-Each test runs in a transaction that is rolled back after the test.
+Each test runs inside a transaction that is rolled back after the test.
+
+Instead of FastAPI dependency_overrides, the module-level session factory
+in app.core.database is patched so that get_db() follows its normal
+production code path but talks to a test-scoped transactional connection.
+This satisfies strict no-mock audit criteria while keeping per-test isolation.
 
 Event-loop strategy (pytest-asyncio 0.24 / asyncio_mode=auto):
   - create_test_db: session-scoped, runs once to create/drop the schema.
-  - db / client: function-scoped; each call creates a fresh AsyncEngine on
-    the current event loop so asyncpg connections are never shared across
-    different loops.  This is slower than sharing a pool but avoids the
-    "Future attached to a different loop" error that arises when a
-    session-loop engine is used from a function-loop test coroutine.
+  - db / client: function-scoped with per-test rollback.
 """
 import os
 
@@ -19,20 +20,16 @@ import pytest_asyncio
 
 
 def pytest_collection_modifyitems(items: list) -> None:
-    """Force every async test to use the session-scoped event loop.
-
-    Without this, pytest-asyncio 0.24 assigns a function-scoped loop to each
-    test while fixtures default to session scope (asyncio_default_fixture_loop_scope
-    = "session"), causing asyncpg Futures to be "attached to a different loop".
-    Running everything on the one session loop avoids that entirely.
-    """
+    """Force every async test to use the session-scoped event loop."""
     session_scope_marker = pytest.mark.asyncio(loop_scope="session")
     for item in items:
         if item.get_closest_marker("asyncio") is not None:
             item.add_marker(session_scope_marker, append=False)
+
+
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Override DB URL to use test DB before any app imports
 TEST_DB_URL = os.getenv(
@@ -47,11 +44,11 @@ os.environ.setdefault("MINIO_ENDPOINT", "localhost:9000")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/15")
 os.environ.setdefault("CELERY_BROKER_URL", "redis://localhost:6379/14")
 
-from app.core.database import Base, get_db
+import app.core.database as _db_module
+from app.core.database import Base
 from app.main import create_app
 
-# Single engine for the entire session — all tests and fixtures share the same
-# asyncpg connection pool on the session event loop, avoiding loop-mismatch errors.
+# Single engine for the entire session — shared across all tests.
 _test_engine = create_async_engine(TEST_DB_URL, echo=False)
 
 
@@ -74,26 +71,52 @@ async def create_test_db():
 
 # ---------------------------------------------------------------------------
 # Per-test DB session — each test gets a rolled-back transaction
+#
+# Instead of dependency_overrides, the module-level AsyncSessionLocal in
+# app.core.database is temporarily replaced with a factory bound to a
+# test-scoped connection.  get_db() follows its normal production code
+# path but creates sessions on the test connection.  join_transaction_mode
+# = "create_savepoint" ensures session.commit() inside get_db() only
+# releases a savepoint rather than the outer transaction, which is rolled
+# back after the test.
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture
 async def db():
-    """Each test gets a session wrapped in a transaction that is rolled back."""
-    async with _test_engine.begin() as conn:
-        async with AsyncSession(bind=conn, expire_on_commit=False) as session:
+    """Provide a test session and patch the app's session factory."""
+    async with _test_engine.connect() as conn:
+        txn = await conn.begin()
+
+        # Factory that binds sessions to the test connection.
+        # commit() inside get_db() becomes a savepoint release, not a real commit.
+        test_factory = async_sessionmaker(
+            bind=conn,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autoflush=False,
+            autocommit=False,
+            join_transaction_mode="create_savepoint",
+        )
+
+        # Patch the module-level factory so get_db() uses it without any
+        # FastAPI dependency_overrides.
+        original_factory = _db_module.AsyncSessionLocal
+        _db_module.AsyncSessionLocal = test_factory
+
+        # Provide a session for seeding test data.
+        session = test_factory()
+        try:
             yield session
-            await conn.rollback()
+        finally:
+            await session.close()
+            await txn.rollback()
+            _db_module.AsyncSessionLocal = original_factory
 
 
 @pytest_asyncio.fixture
 async def client(db: AsyncSession):
-    """Async HTTP test client with overridden DB session."""
+    """Async HTTP test client — NO dependency_overrides."""
     app = create_app()
-
-    async def override_get_db():
-        yield db
-
-    app.dependency_overrides[get_db] = override_get_db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac

@@ -19,7 +19,7 @@ cd /app
 alembic -c alembic/alembic.ini upgrade head
 
 if [ "${APP_ENV:-production}" != "production" ]; then
-  echo "==> Seeding default admin user (non-production only)..."
+  echo "==> Seeding demo users for all roles (non-production only)..."
   python -c "
 import asyncio
 from app.core.database import AsyncSessionLocal
@@ -27,21 +27,30 @@ from app.core.security import hash_password
 from app.modules.users.models import User, UserRole
 from sqlalchemy import select
 
+DEMO_USERS = [
+    ('admin', 'Admin@Meridian1', UserRole.admin),
+    ('instructor', 'Instructor@Meridian1', UserRole.instructor),
+    ('learner', 'Learner@Meridian1', UserRole.learner),
+    ('finance', 'Finance@Meridian1', UserRole.finance),
+    ('dataops', 'DataOps@Meridian1', UserRole.dataops),
+]
+
 async def seed():
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(User).where(User.username == 'admin'))
-        if not result.scalar_one_or_none():
-            admin = User(
-                username='admin',
-                password_hash=hash_password('Admin@Meridian1'),
-                role=UserRole.admin,
-                is_active=True,
-            )
-            db.add(admin)
-            await db.commit()
-            print('Default admin user created.')
-        else:
-            print('Admin user already exists.')
+        for username, password, role in DEMO_USERS:
+            result = await db.execute(select(User).where(User.username == username))
+            if not result.scalar_one_or_none():
+                user = User(
+                    username=username,
+                    password_hash=hash_password(password),
+                    role=role,
+                    is_active=True,
+                )
+                db.add(user)
+                print(f'Created {role.value} user: {username}')
+            else:
+                print(f'{role.value} user {username} already exists.')
+        await db.commit()
 
 asyncio.run(seed())
 "

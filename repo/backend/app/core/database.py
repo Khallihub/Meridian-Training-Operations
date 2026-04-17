@@ -27,10 +27,17 @@ class Base(DeclarativeBase):
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    from app.core.exceptions import AppError
+
     async with AsyncSessionLocal() as session:
         try:
             yield session
             await session.commit()
+        except AppError:
+            # Business/HTTP errors (401, 403, 404, etc.) — commit so that
+            # side-effects like login-failure counters are persisted.
+            await session.commit()
+            raise
         except Exception:
             await session.rollback()
             raise

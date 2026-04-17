@@ -94,14 +94,15 @@ async def download_export(
     )
     if job_resp.status != SearchExportJobStatus.completed:
         raise HTTPException(status_code=409, detail=f"Export job is not complete (status: {job_resp.status}).")
-    if not job_resp.file_path:  # pragma: no cover
-        raise HTTPException(status_code=500, detail="Export file path missing.")
 
     # Re-fetch the raw model to get file_path (not exposed in response schema)
     from sqlalchemy import select as _select
     from app.modules.search.models import SearchExportJob
     result = await db.execute(_select(SearchExportJob).where(SearchExportJob.id == job_id))
     job = result.scalar_one()
+
+    if not job.file_path:
+        raise HTTPException(status_code=500, detail="Export file path missing.")
 
     fmt = job.format
     media_type = (
